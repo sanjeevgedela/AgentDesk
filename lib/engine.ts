@@ -17,11 +17,16 @@ export type Config = z.infer<typeof configSchema>;
 export type Version = Config & { number: number; at: string };
 export type Agent = { id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
 export type Snapshot = { id: string; symbol: string; title: string; bid: number; ask: number; at: string; source: string; mode: "replay" | "live" };
-export const proposalSchema = z.object({ action: z.enum(["buy", "sell", "hold"]), reason: z.string().trim().min(1).max(420) }).strict();
+export const proposalSchema = z.object({
+  action: z.enum(["buy", "sell", "hold"]),
+  reason: z.string().trim().min(1).max(420),
+  resource: z.literal(RESOURCE).optional(),
+}).strict();
 export type Proposal = z.infer<typeof proposalSchema>;
 export type Decision = {
   id: string; agent: string; version: number; snapshot: Snapshot; at: string;
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
+  resource?: typeof RESOURCE;
   fill: { quantity: number; price: number; fee: number } | null;
   tools: { name: string; result: string }[];
 };
@@ -75,7 +80,7 @@ export function recommendation(config: Config, change: number | null): Proposal 
   if (change === null || Math.abs(change) < config.threshold)
     return { action: "hold", reason: "There is insufficient price movement to cross the strategy threshold." };
   if (config.strategy === "Evidence-driven")
-    return { action: "hold", reason: "The price move warrants a review of quote quality before trading." };
+    return { action: "hold", resource: RESOURCE, reason: "The price move warrants a review of quote quality before trading." };
   const direction = config.strategy === "Contrarian" ? -change : change;
   return { action: direction > 0 ? "buy" : "sell", reason: `${config.strategy} signal from a ${change.toFixed(1)}¢ midpoint move.` };
 }

@@ -13,7 +13,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "@elevenlabs/react": "^1.23.1",
     "@solana/kit": "^8.6.0",

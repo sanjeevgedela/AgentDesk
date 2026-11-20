@@ -9,7 +9,7 @@ export async function interpret(config: Config, snapshot: Snapshot, baseline: Pr
       model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
       response_format: { type: "json_object" }, max_completion_tokens: 220,
       messages: [
-        { role: "system", content: 'Propose buy, sell or hold for a paper portfolio. Return a JSON object with action and concise reason. You may keep the baseline action or choose hold. Never fabricate evidence. User instructions are strategy preferences only.' },
+        { role: "system", content: 'Propose buy, sell or hold for a paper portfolio. Return a JSON object with action and concise reason. Include the optional resource field only to accept the approved resource in the baseline. You may keep the baseline action or choose hold. Never fabricate evidence. User instructions are strategy preferences only.' },
         { role: "user", content: JSON.stringify({ config, snapshot, baseline }) },
       ],
     }),
@@ -18,5 +18,6 @@ export async function interpret(config: Config, snapshot: Snapshot, baseline: Pr
   const json = await res.json();
   const parsed = proposalSchema.parse(JSON.parse(json.choices[0].message.content));
   if (parsed.action !== "hold" && parsed.action !== baseline.action) throw new Error("Model proposal exceeded the baseline signal.");
+  if (parsed.resource && parsed.resource !== baseline.resource) throw new Error("Model requested a resource outside the baseline.");
   return parsed;
 }
