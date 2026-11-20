@@ -246,3 +246,23 @@ test("overlapping refresh API requests make only one stop-loss fill", async t =>
     await rm(`.agentdesk/quotes-${symbol}.jsonl`, { force: true });
   }
 });
+
+test("a live strategy accumulates small changes across rapid refreshes without reading future quotes", () => {
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  const fixture = currentSnapshot(desk)!;
+  const symbol = "GEMI-SHORT-SIGNAL";
+  latest(agent).markets = [symbol];
+  const now = Date.now();
+  const quotes = [40, 41, 42, 43, 20].map((bid, index) => ({
+    ...fixture, id: `fast-${index}`, symbol, mode: "live" as const, bid, ask: bid + 2,
+    at: new Date(now + (index - 3) * 500).toISOString(),
+  }));
+  desk.snapshots.push(...quotes);
+  const change = signal(desk, quotes[3]);
+  assert.equal(change, 3);
+  assert.equal(recommendation(latest(agent), change).action, "buy");
+  assert.match(recommendation(latest(agent), 1).reason, /1.0¢.*3¢/);
+  const decision = record(desk, agent, quotes[3], recommendation(latest(agent), change), []);
+  assert.equal(decision.fill?.price, 45);
+});

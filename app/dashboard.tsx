@@ -36,6 +36,7 @@ function DeskView() {
   const [instructions, setInstructions] = useState("");
   const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; quotes: QuotePoint[]; backfill?: z.infer<typeof historySchema>["backfill"] }>();
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [automaticRuns, setAutomaticRuns] = useState<number>();
   const [trainingAgent, setTrainingAgent] = useState("");
@@ -46,15 +47,27 @@ function DeskView() {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<{ question: string; answer: string }[]>([]);
 
-  const request = useCallback(async (action?: Action, secret = token): Promise<Payload> => {
+  const visibleWorkspace = useRef({ token: "", revision: -1 });
+  const request = useCallback(async (action?: Action, switchTo?: string): Promise<Payload> => {
+    const secret = switchTo ?? token;
     const headers: Record<string, string> = {};
     if (secret) headers.authorization = "Bearer " + secret;
     if (action) headers["content-type"] = "application/json";
     const response = await fetch("/api/desk", { headers, cache: "no-store", method: action ? "POST" : "GET", body: action && JSON.stringify(action) });
     const payload = await response.json() as Payload;
     if (!response.ok) throw new Error(payload.error || "AgentDesk could not complete the request.");
-    if (payload.desk) setDesk(payload.desk);
-    if (payload.runs !== undefined) setAutomaticRuns(payload.runs);
+
+    if (switchTo !== undefined && secret !== visibleWorkspace.current.token) {
+      visibleWorkspace.current = { token: secret, revision: -1 };
+    }
+    if (secret !== visibleWorkspace.current.token) return payload;
+    if (payload.desk) {
+      const revision = payload.desk.revision ?? 0;
+      if (revision < visibleWorkspace.current.revision) return payload;
+      visibleWorkspace.current.revision = revision;
+      setDesk(payload.desk);
+      if (payload.runs !== undefined) setAutomaticRuns(payload.runs);
+    }
     if (payload.auth !== undefined) setAuth(payload.auth);
     if (payload.operatorAccess !== undefined) setOperatorAccess(payload.operatorAccess);
     if (payload.model !== undefined) setModel(payload.model);
@@ -134,29 +147,45 @@ function DeskView() {
   const selectedTrainingAgent = desk?.agents.find(agent => agent.id === trainingAgent) ?? desk?.agents[0];
   const trainingCount = matchingHistory?.count ?? 0;
   const allowedToTrain = !!snapshot && !!selectedTrainingAgent && latest(selectedTrainingAgent).markets.includes(snapshot.symbol);
-  const liveMark = snapshot?.mode === "live" ? snapshot : undefined;
+  const live = desk?.mode === "live";
+  const pollInFlight = useRef<Promise<void> | null>(null);
 
-  const lastRefreshStarted = useRef<number | undefined>(undefined);
+  const refreshQuotes = useCallback(() => {
+    if (pollInFlight.current) return pollInFlight.current;
+    setQuoteRefreshing(true);
+    const pending = request({ kind: "refresh-live" })
+      .then(result => setRefreshMessage(result.refreshed ? "" : "No fresh quote for this market. Showing its last observed mark."))
+      .catch(() => setRefreshMessage("Live update unavailable. Showing the last observed mark."))
+      .finally(() => {
+        pollInFlight.current = null;
+        setQuoteRefreshing(false);
+      });
+    pollInFlight.current = pending;
+    return pending;
+  }, [request]);
+
   useEffect(() => {
-    if (!autoRefresh || !liveMark || busy || editing || funding || unlock) return;
-    let refreshing = false;
-    const refresh = () => {
-      if (refreshing || document.visibilityState !== "visible") return;
-      refreshing = true;
-      lastRefreshStarted.current = performance.now();
-      setBusy("Refreshing live marks");
-      void request({ kind: "refresh-live" })
-        .then(result => setRefreshMessage(result.refreshed ? "" : "No fresh quote for this market. Showing its last observed mark."))
-        .catch(() => setRefreshMessage("Live update unavailable. Showing the last observed mark."))
-        .finally(() => setBusy(""));
+    if (!autoRefresh || !live) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const schedule = (delay = LIVE_REFRESH_MS) => {
+      window.clearTimeout(timer);
+      if (!stopped && document.visibilityState === "visible") timer = window.setTimeout(refresh, delay);
     };
-    const previous = lastRefreshStarted.current;
-    const delay = previous === undefined ? LIVE_REFRESH_MS : Math.max(0, LIVE_REFRESH_MS - (performance.now() - previous));
-    const timer = window.setTimeout(refresh, delay);
-    const reschedule = () => { if (document.visibilityState === "visible") { window.clearTimeout(timer); refresh(); } };
-    document.addEventListener("visibilitychange", reschedule);
-    return () => { window.clearTimeout(timer); document.removeEventListener("visibilitychange", reschedule); };
-  }, [autoRefresh, liveMark, busy, editing, funding, unlock, request]);
+    const refresh = async () => {
+      const started = performance.now();
+      await refreshQuotes();
+      schedule(Math.max(0, LIVE_REFRESH_MS - (performance.now() - started)));
+    };
+    const visible = () => schedule();
+    schedule();
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [autoRefresh, live, refreshQuotes]);
   const valuation = (a: Agent) => a.cash + Object.entries(a.positions).reduce((sum, [symbol, qty]) => {
     const mark = desk?.snapshots.findLast(s => s.symbol === symbol);
     return sum + (mark ? qty * (mark.bid + mark.ask) / 2 : 0);
@@ -265,10 +294,7 @@ function DeskView() {
           <section className="panel market">
             <div className="section-head"><div><span className="eyebrow">{desk.mode === "replay" ? "SYNTHETIC REPLAY" : "GEMINI PREDICTION MARKETS"}</span><h2>{snapshot?.title || "Market snapshot"}</h2></div>
               {desk.mode === "replay" ? <button className="quiet" disabled={!!busy || desk.replay >= 5} onClick={() => act("Advancing replay", { kind: "advance" })}>{desk.replay >= 5 ? "Replay complete" : "Next snapshot →"}</button>
-                : <button className="quiet" disabled={!!busy} onClick={() => perform("Refreshing Gemini", async () => {
-                    const result = await request({ kind: "refresh-live" });
-                    setRefreshMessage(result.refreshed ? "" : "No fresh quote for this market. Showing its last observed mark.");
-                  })}>Refresh quotes</button>}</div>
+                : <button className="quiet" disabled={quoteRefreshing} onClick={() => void refreshQuotes()}>{quoteRefreshing ? "Refreshing quotes…" : "Refresh quotes"}</button>}</div>
             {desk.mode === "live" && <label className="select-market">Market<select disabled={!!busy} value={desk.selected} onChange={e => act("Selecting market", { kind: "select", symbol: e.target.value })}>{markets.map(s => <option key={s.symbol} value={s.symbol}>{s.title}</option>)}</select></label>}
             {snapshot && <><div className="quote"><strong>{((snapshot.bid + snapshot.ask) / 2).toFixed(1)}¢</strong><span>YES midpoint</span><span>Bid {snapshot.bid}¢</span><span>Ask {snapshot.ask}¢</span></div>
               <MarketChart key={snapshot.symbol} quotes={chartQuotes} signals={desk.decisions

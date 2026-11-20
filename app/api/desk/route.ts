@@ -225,11 +225,13 @@ export async function POST(req: NextRequest) {
       const outcome = await transact(owner, desk => {
         const agent = agentFor(desk, input.id);
         const current = currentSnapshot(desk);
-        if (latest(agent).number !== original.version.number || !current || !sameObservation(current, original.snapshot))
+        if (latest(agent).number !== original.version.number || !current || current.symbol !== original.snapshot.symbol || current.mode !== original.snapshot.mode)
           throw new Error("The strategy or market changed during this run. Try again.");
-        const existing = hasRun(desk, agent, original.snapshot);
+        const existing = hasRun(desk, agent, current);
         if (existing) return { desk, decision: existing, reused: true };
-        const decision = recordRun(desk, agent, original.snapshot, proposal, source);
+        const fresh = sameObservation(current, original.snapshot) ? { proposal, source }
+          : evaluateRun(latest(agent), current, signal(desk, current));
+        const decision = recordRun(desk, agent, current, fresh.proposal, fresh.source);
         if (auth) queueAnchor(decision, latest(agent));
         return { desk, decision, reused: false };
       });

@@ -54,6 +54,7 @@ export type Purchase = {
 export type BudgetChange = { id: string; agent: string; cap: number; budget: number; expires: number };
 export type Settlement = { symbol: string; outcome: "yes" | "no"; at: string; source?: string; payouts: { agent: string; contracts: number; cents: number }[] };
 export type Desk = {
+  revision?: number;
   backfill?: HistoryBackfill;
   settlements?: Settlement[];
   agents: Agent[]; snapshots: Snapshot[]; decisions: Decision[]; purchases: Purchase[];
@@ -98,12 +99,16 @@ export function currentSnapshot(desk: Desk) {
 }
 export function signal(desk: Desk, snapshot: Snapshot) {
   const history = desk.snapshots.filter(s => s.mode === snapshot.mode && s.symbol === snapshot.symbol);
-  const previous = history.findLast(s => s.id !== snapshot.id && s.at < snapshot.at);
+  const recent = history.filter(s => s.at < snapshot.at);
+  // Half-second observations can split a useful live move into small increments.
+  const cutoff = Date.parse(snapshot.at) - 15_000;
+  const previous = (snapshot.mode === "live" ? recent.find(s => Date.parse(s.at) >= cutoff) : undefined) ?? recent.at(-1);
   return previous ? (snapshot.bid + snapshot.ask - previous.bid - previous.ask) / 2 : null;
 }
 export function recommendation(config: Config, change: number | null): Proposal {
   if (change === null || Math.abs(change) < config.threshold)
-    return { action: "hold", reason: "There is insufficient price movement to cross the strategy threshold." };
+    return { action: "hold", reason: change === null ? "Waiting for a previous quote to measure the signal."
+      : `The ${change.toFixed(1)}¢ midpoint move is below the ${config.threshold}¢ strategy threshold.` };
   if (config.strategy === "Evidence-driven")
     return { action: "hold", resource: RESOURCE, reason: "The price move warrants a review of quote quality before trading." };
   const direction = config.strategy === "Contrarian" ? -change : change;

@@ -15,6 +15,7 @@ export async function transact<T>(owner: string, fn: (desk: Desk) => T | Promise
     const [row] = await tx`select state from agentdesk_workspace where owner = ${owner} for update`;
     const desk = row.state as Desk;
     const result = await fn(desk);
+    desk.revision = (desk.revision ?? 0) + 1;
     await tx`update agentdesk_workspace set state = ${tx.json(JSON.parse(JSON.stringify(desk)))}, updated_at = now() where owner = ${owner}`;
     return result;
   }) as Promise<T>;
@@ -30,6 +31,7 @@ export async function transact<T>(owner: string, fn: (desk: Desk) => T | Promise
       desk = newDesk();
     }
     const result = await fn(desk);
+    desk.revision = (desk.revision ?? 0) + 1;
     await writeFile(file + ".tmp", JSON.stringify(desk), { mode: 0o600 });
     await rename(file + ".tmp", file);
     return result;
