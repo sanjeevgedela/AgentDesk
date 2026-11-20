@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  advance, configSchema, currentSnapshot, evidenceFor, latest, newAgent, recommendation, record,
+  advance, configSchema, currentSnapshot, evidenceFor, keepRecentQuotes, latest, newAgent, recommendation, record,
   REPLAY_SYMBOL, reserve, reserved, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
 } from "../../../lib/engine";
+import { appendQuotes } from "../../../lib/history";
 import { geminiSnapshots } from "../../../lib/gemini";
 import { parseInstructions } from "../../../lib/policy";
 import { evaluateInstructions } from "../../../lib/instructions";
@@ -192,6 +193,7 @@ export async function POST(req: NextRequest) {
       }));
     }
     const live = input.kind === "mode" && input.mode === "live" ? await geminiSnapshots() : null;
+    if (live) await appendQuotes(live);
     if (input.kind === "run") {
       const original = await transact(owner, desk => {
         const agent = agentFor(desk, input.id);
@@ -239,7 +241,7 @@ export async function POST(req: NextRequest) {
         case "mode":
           desk.mode = input.mode;
           if (live) {
-            desk.snapshots.push(...live);
+            keepRecentQuotes(desk, live);
             if (!live.some(s => s.symbol === desk.selected)) desk.selected = live[0].symbol;
           } else desk.selected = REPLAY_SYMBOL;
           break;

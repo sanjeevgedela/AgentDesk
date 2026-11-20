@@ -41,6 +41,7 @@ export type Purchase = {
 export type BudgetChange = { id: string; agent: string; cap: number; budget: number; expires: number };
 export type Desk = {
   agents: Agent[]; snapshots: Snapshot[]; decisions: Decision[]; purchases: Purchase[];
+  lastTick?: number;
   changes: BudgetChange[]; replay: number; mode: Snapshot["mode"]; selected: string;
 };
 export function latest(agent: Agent) { return agent.versions[agent.versions.length - 1]; }
@@ -143,3 +144,13 @@ export function evidenceFor(snapshot: Snapshot) {
 }
 export function dollars(cents: number) { return "$" + (cents / 100).toFixed(2); }
 export function usdc(units: number) { return (units / 1_000_000).toFixed(2) + " USDC"; }
+
+export function keepRecentQuotes(desk: Desk, snapshots: Snapshot[]) {
+  const counts = new Map<string, number>();
+  desk.snapshots = [...desk.snapshots, ...snapshots].reverse().filter(quote => {
+    const key = quote.mode + "/" + quote.symbol;
+    const count = (counts.get(key) ?? 0) + 1;
+    counts.set(key, count);
+    return count <= 50;
+  }).reverse();
+}

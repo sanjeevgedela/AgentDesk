@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newDesk, type Desk } from "./engine";
 
 const connection = process.env.DATABASE_URL;
-const sql = connection ? postgres(connection, { max: 3, prepare: false }) : undefined;
+export const sql = connection ? postgres(connection, { max: 3, prepare: false }) : undefined;
 const folder = join(process.cwd(), ".agentdesk");
 let queue = Promise.resolve<unknown>(undefined);
 
@@ -38,9 +38,12 @@ export async function transact<T>(owner: string, fn: (desk: Desk) => T | Promise
   return operation;
 }
 
-export function operator(token: string | null) {
-  const secret = process.env.AGENTDESK_OPERATOR_TOKEN;
+export function matchesBearer(token: string | null, secret: string | undefined) {
   if (!secret || secret.length < 32 || !token) return false;
   const hash = (s: string) => createHash("sha256").update(s).digest();
   return timingSafeEqual(hash(token), hash("Bearer " + secret));
+}
+
+export function operator(token: string | null) {
+  return matchesBearer(token, process.env.AGENTDESK_OPERATOR_TOKEN);
 }
