@@ -1,4 +1,4 @@
-import { RESOURCE, latest, recommendation, record, type Agent, type Config, type Desk, type Snapshot, type Proposal, type Version } from "./engine";
+import { RESOURCE, latest, recommendation, recordIf, type Agent, type Config, type Desk, type Decision, type Snapshot, type Proposal, type Version } from "./engine";
 import { predict } from "./fitted";
 import { evaluateInstructions } from "./instructions";
 import { parseInstructions } from "./policy";
@@ -26,7 +26,9 @@ export function forecastProposal(config: Pick<Config, "strategy" | "threshold">,
   };
 }
 
-export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly = false) {
+export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly?: boolean): Decision;
+export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly: boolean, accept: (decision: Decision) => boolean): Decision | undefined;
+export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly = false, accept?: (decision: Decision) => boolean) {
   const version = latest(agent);
   const model = agent.fittedModels?.find(item => item.id === version.modelId);
   const previous = desk.snapshots.findLast(quote => quote.mode === snapshot.mode && quote.symbol === snapshot.symbol && quote.at < snapshot.at);
@@ -45,10 +47,10 @@ export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal
     proposal = { action: "hold", reason: "Automatic watch only checks the configured stop-loss." };
     source = "stop_watch";
   }
-  const decision = record(desk, agent, snapshot, proposal, [
+  const decision = recordIf(desk, agent, snapshot, proposal, [
     { name: "market_snapshot", result: snapshot.source },
     { name: source, result: proposal.reason },
-  ]);
-  if (!stopOnly && inference) decision.forecast = inference;
+  ], undefined, undefined, accept);
+  if (decision && !stopOnly && inference) decision.forecast = inference;
   return decision;
 }

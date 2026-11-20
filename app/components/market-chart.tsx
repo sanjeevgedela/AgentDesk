@@ -14,9 +14,15 @@ export function smoothPath(points: Point[]) {
   }).join(" ");
 }
 
-export function MarketChart({ quotes, signals = [] }: { quotes: QuotePoint[]; signals?: { id: string; at: string; label: string }[] }) {
+export function MarketChart({ quotes: allQuotes, signals = [] }: { quotes: QuotePoint[]; signals?: { id: string; at: string; label: string }[] }) {
   const gradient = useId();
   const [inspect, setInspect] = useState<string>();
+  const [through, setThrough] = useState<string>();
+  const limit = 120;
+  const foundEnd = through ? allQuotes.findIndex(quote => quote.at === through) : -1;
+  const end = foundEnd < 0 ? allQuotes.length : foundEnd + 1;
+  const start = Math.max(0, end - limit);
+  const quotes = allQuotes.slice(start, end);
   if (!quotes.length) return null;
 
   const mids = quotes.map(quote => (quote.ask + quote.bid) / 2);
@@ -35,6 +41,15 @@ export function MarketChart({ quotes, signals = [] }: { quotes: QuotePoint[]; si
   const path = smoothPath(points);
   const timestamp = new Date(quote.at).toLocaleString();
   return <div className="quote-chart">
+    {allQuotes.length > limit && <div className="backtest-pages">
+      <button type="button" className="quiet" disabled={start === 0} onClick={() => {
+        setThrough(allQuotes[start - 1]?.at); setInspect(undefined);
+      }}>Earlier quotes</button>
+      <small>{quotes.length} of {allQuotes.length} observations</small>
+      <button type="button" className="quiet" disabled={end === allQuotes.length} onClick={() => {
+        setThrough(end + limit >= allQuotes.length ? undefined : allQuotes[end + limit - 1].at); setInspect(undefined);
+      }}>Newer quotes</button>
+    </div>}
     <svg className="chart" viewBox="0 0 800 175" preserveAspectRatio="none" role="img" aria-label="YES midpoint over observation time">
       <defs>
         <linearGradient id={gradient} x2="0" y2="1">

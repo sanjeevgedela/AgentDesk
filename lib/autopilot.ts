@@ -30,13 +30,20 @@ function liveDecision(desk: Desk, agent: Desk["agents"][number], quote: Snapshot
   if (hasRun(desk, agent, quote)) return;
   const previous = desk.decisions.findLast(item => item.agent === agent.id && item.snapshot.mode === "live" &&
     item.snapshot.symbol === quote.symbol && item.version === config.number && !item.researchPurchase);
-  // Two collectors can observe the same unchanged quote milliseconds apart.
-  if (previous && previous.snapshot.bid === quote.bid && previous.snapshot.ask === quote.ask &&
-      Date.parse(quote.at) - Date.parse(previous.snapshot.at) < 15_000) return;
   const stopOnly = scheduled ? config.auto !== true : config.auto === false;
   if (stopOnly && !positionMark(desk, agent, quote)?.triggered) return;
   const base = evaluateRun(config, quote, signal(desk, quote));
-  return recordRun(desk, agent, quote, base.proposal, base.source, stopOnly);
+  return recordRun(desk, agent, quote, base.proposal, base.source, stopOnly, decision => {
+    if (!previous) return true;
+    const stop = decision.tools.some(tool => tool.name === "stop_loss");
+    const previousStop = previous.tools.some(tool => tool.name === "stop_loss");
+    // Overlapping collectors should not liquidate twice on the same stop mark.
+    const repeatedStop = previousStop && previous.snapshot.bid === quote.bid && previous.snapshot.ask === quote.ask &&
+      Date.parse(quote.at) - Date.parse(previous.snapshot.at) < 15_000;
+    return decision.action !== previous.action || decision.resource !== previous.resource ||
+      decision.validation?.find(stage => !stage.ok)?.name !== previous.validation?.find(stage => !stage.ok)?.name ||
+      stop !== previousStop || (stop && !!decision.fill && !repeatedStop);
+  });
 }
 
 export function runLiveDesk(desk: Desk, quotes: Snapshot[]) {

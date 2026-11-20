@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { z } from "zod";
 import { DecisionAudit, ValidationSteps } from "./components/audit";
 import { FittedTraining } from "./components/fitted-training";
+import { PagedFeed } from "./components/paged-feed";
 import { MarketChart, type QuotePoint } from "./components/market-chart";
 import { PolicyPreview, Sparkline, TrainingPanel } from "./components/training";
-import { agentStats, currentSnapshot, hasRun, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
+import { agentStats, currentSnapshot, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
 
 type Payload = { runs?: number; refreshed?: boolean; proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
@@ -38,7 +39,6 @@ function DeskView() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
-  const [automaticRuns, setAutomaticRuns] = useState<number>();
   const [trainingAgent, setTrainingAgent] = useState("");
   const [editing, setEditing] = useState<Agent | "new">();
   const [addMarket, setAddMarket] = useState(false);
@@ -66,7 +66,6 @@ function DeskView() {
       if (revision < visibleWorkspace.current.revision) return payload;
       visibleWorkspace.current.revision = revision;
       setDesk(payload.desk);
-      if (payload.runs !== undefined) setAutomaticRuns(payload.runs);
     }
     if (payload.auth !== undefined) setAuth(payload.auth);
     if (payload.operatorAccess !== undefined) setOperatorAccess(payload.operatorAccess);
@@ -139,7 +138,8 @@ function DeskView() {
     const timer = window.setInterval(loadHistory, 10_000);
     return () => { window.clearInterval(timer); controller.abort(); };
   }, [liveSymbol]);
-  const markets = desk ? [...new Map(desk.snapshots.filter(s => s.mode === desk.mode).map(s => [s.symbol, s])).values()] : [];
+  const markets = desk ? [...new Map(desk.snapshots.filter(s => s.mode === desk.mode).map(s => [s.symbol, s])).values()]
+    .sort((a, b) => a.title.localeCompare(b.title) || a.symbol.localeCompare(b.symbol)) : [];
   const matchingHistory = desk?.mode === "live" && history?.symbol === desk.selected ? history : undefined;
   const series = desk?.snapshots.filter(s => s.symbol === desk.selected && s.mode === desk.mode) ?? [];
   const chartQuotes = [...new Map([...(matchingHistory?.quotes ?? []), ...series].map(item => [item.at, item])).values()]
@@ -150,9 +150,9 @@ function DeskView() {
   const live = desk?.mode === "live";
   const pollInFlight = useRef<Promise<void> | null>(null);
 
-  const refreshQuotes = useCallback(() => {
+  const refreshQuotes = useCallback((manual = false) => {
+    if (manual) setQuoteRefreshing(true);
     if (pollInFlight.current) return pollInFlight.current;
-    setQuoteRefreshing(true);
     const pending = request({ kind: "refresh-live" })
       .then(result => setRefreshMessage(result.refreshed ? "" : "No fresh quote for this market. Showing its last observed mark."))
       .catch(() => setRefreshMessage("Live update unavailable. Showing the last observed mark."))
@@ -230,10 +230,13 @@ function DeskView() {
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const markets = String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean);
+    const previousMarkets = editing && editing !== "new" ? latest(editing).markets : undefined;
+    const marketsChanged = !previousMarkets || markets.length !== previousMarkets.length || markets.some((market, i) => market !== previousMarkets[i]);
     const config = { name: data.get("name"), strategy: data.get("strategy"), instructions: data.get("instructions"),
       threshold: Number(data.get("threshold")), positionLimit: Number(data.get("limit")),
       stopLossPct: data.get("stopLoss") ? Number(data.get("stopLoss")) : undefined,
-      auto: data.has("auto"), markets: String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean), active: data.has("active") };
+      auto: data.has("auto"), markets: marketsChanged ? markets : undefined, active: data.has("active") };
     return perform("Saving strategy", async () => {
       await request({ kind: "save", config, id: editing === "new" ? undefined : editing?.id });
       setEditing(undefined);
@@ -294,7 +297,7 @@ function DeskView() {
           <section className="panel market">
             <div className="section-head"><div><span className="eyebrow">{desk.mode === "replay" ? "SYNTHETIC REPLAY" : "GEMINI PREDICTION MARKETS"}</span><h2>{snapshot?.title || "Market snapshot"}</h2></div>
               {desk.mode === "replay" ? <button className="quiet" disabled={!!busy || desk.replay >= 5} onClick={() => act("Advancing replay", { kind: "advance" })}>{desk.replay >= 5 ? "Replay complete" : "Next snapshot →"}</button>
-                : <button className="quiet" disabled={quoteRefreshing} onClick={() => void refreshQuotes()}>{quoteRefreshing ? "Refreshing quotes…" : "Refresh quotes"}</button>}</div>
+                : <button className="quiet" disabled={quoteRefreshing} onClick={() => void refreshQuotes(true)}>{quoteRefreshing ? "Refreshing quotes…" : "Refresh quotes"}</button>}</div>
             {desk.mode === "live" && <label className="select-market">Market<select disabled={!!busy} value={desk.selected} onChange={e => act("Selecting market", { kind: "select", symbol: e.target.value })}>{markets.map(s => <option key={s.symbol} value={s.symbol}>{s.title}</option>)}</select></label>}
             {snapshot && <><div className="quote"><strong>{((snapshot.bid + snapshot.ask) / 2).toFixed(1)}¢</strong><span>YES midpoint</span><span>Bid {snapshot.bid}¢</span><span>Ask {snapshot.ask}¢</span></div>
               <MarketChart key={snapshot.symbol} quotes={chartQuotes} signals={desk.decisions
@@ -309,7 +312,7 @@ function DeskView() {
               </small>}
               {snapshot.mode === "live" && <div className="history-mini live-controls">
                 <label className="check"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} /> Refresh live quotes every 0.5 seconds</label>
-                <small>Fresh quotes run eligible paper agents and check configured stop-losses. {automaticRuns !== undefined && `Last refresh: ${automaticRuns} decision${automaticRuns === 1 ? "" : "s"} recorded.`}</small>
+                <small>Automatic runs appear when the decision changes. Configured stop-losses are checked on fresh quotes.</small>
                 <small>{matchingHistory ? `${matchingHistory.count} recent recorded observations · SHA-256 ${matchingHistory.hash.slice(0, 12)}…` : "Loading recorded history…"}</small>
                 {matchingHistory?.backfill && <small>
                   {matchingHistory.backfill.status === "empty" ? "Gemini returned no contract price history for backfill."
@@ -328,8 +331,8 @@ function DeskView() {
             <div className="agents">{desk.agents.map((agent, i) => {
               const config = latest(agent);
               const decision = desk.decisions.findLast(d => d.agent === agent.id);
-              const currentDecision = snapshot && hasRun(desk, agent, snapshot);
-              const latestRun = decision?.id === runResult?.id ? decision : currentDecision;
+              const latestRun = snapshot && desk.decisions.findLast(item => item.agent === agent.id &&
+                item.snapshot.mode === snapshot.mode && item.snapshot.symbol === snapshot.symbol);
               const stats = agentStats(desk, agent);
               const mark = snapshot && positionMark(desk, agent, snapshot);
               const marketDecisions = desk.decisions.filter(item => item.agent === agent.id && item.snapshot.symbol === snapshot?.symbol && item.equityAfter !== undefined);
@@ -343,8 +346,8 @@ function DeskView() {
                 <h3>{config.name}</h3><p>{config.strategy} · v{config.number}</p>
                 <dl><div><dt>Paper equity</dt><dd>{dollars(stats.equity)}</dd></div><div><dt>Paper P&L</dt><dd>{dollars(stats.pnl)}</dd></div>{auth && <div><dt>Research cap</dt><dd>{usdc(agent.cap)}</dd></div>}<div><dt>Open contracts</dt><dd>{Object.values(agent.positions).reduce((a, b) => a + b, 0)}</dd></div></dl>
                 <div className="agent-actions">
-                  <button className="primary" disabled={!!busy || !config.active || !snapshot || !!needsMarket} onClick={() => currentDecision ? (location.hash = "decision-" + currentDecision.id) : void run(agent)}>
-                    {running === agent.id ? "Evaluating…" : currentDecision ? "View current run" : "Run agent"}
+                  <button className="primary" disabled={!!busy || running === agent.id || !config.active || !snapshot || !!needsMarket} onClick={() => void run(agent)}>
+                    {running === agent.id ? "Evaluating…" : latestRun?.version === config.number ? "Run again" : "Run agent"}
                   </button>
                   <button className="quiet" disabled={!!busy} onClick={() => { setAddMarket(!!needsMarket); setInstructions(config.instructions); setEditing(agent); }}>{needsMarket ? "Edit allowed markets" : "Edit"}</button>
                   {auth && <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>}
@@ -412,22 +415,22 @@ function DeskView() {
           <div className="details">
             <section className="panel feed" id="activity"><h2>Decision log</h2>
               {!desk.decisions.length && <p className="empty">Run an agent to record its signal, recommendation and simulated fill.</p>}
-              {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.forecast && <p>Model {d.forecast.modelId} · {d.forecast.change.toFixed(2)}¢ predicted midpoint change over {d.forecast.horizon} observations</p>}{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}
+              <PagedFeed entries={[...desk.decisions].reverse()} prefix="decision-" render={d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.forecast && <p>Model {d.forecast.modelId} · {d.forecast.change.toFixed(2)}¢ predicted midpoint change over {d.forecast.horizon} observations</p>}{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}
                 <DecisionAudit decision={d} busy={!!busy} verify={() => perform("Verifying decision memo", async () => {
                   const result = await request({ kind: "verify-anchor", id: d.id });
                   if (result.proof?.state === "uncertain") throw new Error("Solana RPC has not confirmed the memo yet.");
-                })} /></article>)}
+                })} /></article>} />
             </section>
             <section className="panel feed" id="research"><h2>Research payments</h2>
               <p className="empty">{auth ? "Verified quote reviews use Solana devnet test USDC." : "Request a quote review and apply its recommendation to your paper portfolio."}</p>
               {auth && desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
-              {[...desk.purchases].reverse().map(p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}<ValidationSteps stages={p.validation} />
+              <PagedFeed entries={[...desk.purchases].reverse()} prefix="purchase-" render={p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}<ValidationSteps stages={p.validation} />
                 {(p.status === "confirmed" || p.status === "simulated") && p.after && p.after !== "hold" &&
                   (desk.decisions.find(d => d.researchPurchase === p.id)
                     ? <p><a href={"#decision-" + desk.decisions.find(d => d.researchPurchase === p.id)?.id}>Applied paper decision</a></p>
                     : <button className="quiet" disabled={!!busy} onClick={() => act("Applying paper recommendation", { kind: "apply-review", id: p.id })}>Apply as paper order</button>)}
                 {p.signature && <a href={`https://explorer.solana.com/tx/${p.signature}?cluster=devnet`} target="_blank" rel="noreferrer">View Solana devnet receipt ↗</a>}
-                {["uncertain","pending"].includes(p.status) && <button className="quiet" disabled={!!busy || !auth} onClick={() => act("Checking Solana", { kind: "reconcile", id: p.id })}>Check settlement</button>}</article>)}
+                {["uncertain","pending"].includes(p.status) && <button className="quiet" disabled={!!busy || !auth} onClick={() => act("Checking Solana", { kind: "reconcile", id: p.id })}>Check settlement</button>}</article>} />
             </section>
           </div>
           <section className="panel feed" id="supervisor"><div className="section-head"><div><h2>Supervisor</h2><p className="empty">Answers are generated from saved decisions, positions and research records.</p></div>

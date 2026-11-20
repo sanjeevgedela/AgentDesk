@@ -266,3 +266,73 @@ test("a live strategy accumulates small changes across rapid refreshes without r
   const decision = record(desk, agent, quotes[3], recommendation(latest(agent), change), []);
   assert.equal(decision.fill?.price, 45);
 });
+
+test("automatic trading records changed signals without repeating an existing buy", async () => {
+  const { runLiveDesk } = await import("../lib/autopilot");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  const symbol = "GEMI-SIGNAL-TEST";
+  latest(agent).markets = [symbol];
+  const replay = currentSnapshot(desk)!;
+  const now = Date.now();
+  const quotes = [40, 44, 45, 35].map((bid, i) => ({
+    ...replay, id: "signal-" + i, symbol, mode: "live" as const, bid, ask: bid + 2,
+    at: new Date(now - 4000 + i * 1000).toISOString(),
+  }));
+  for (const [i, quote] of quotes.entries()) {
+    desk.snapshots.push(quote);
+    assert.equal(runLiveDesk(desk, [quote]), i === 2 ? 0 : 1);
+    if (i === 2) {
+      assert.equal(agent.positions[symbol], 5);
+      // A manual run on this fresh observation is still permitted.
+      assert.equal(record(desk, agent, quote, recommendation(latest(agent), signal(desk, quote)), []).fill?.quantity, 5);
+    }
+  }
+  assert.deepEqual(desk.decisions.map(item => item.action), ["hold", "buy", "buy", "sell"]);
+  assert.equal(agent.positions[symbol], 5);
+});
+
+test("an agent edit and a replay round trip preserve the selected live market", async t => {
+  const { rm } = await import("node:fs/promises");
+  const { NextRequest } = await import("next/server");
+  const { POST } = await import("../app/api/desk/route");
+  const { transact } = await import("../lib/store");
+  const owner = crypto.randomUUID();
+  const btc = "GEMI-BTC-PIN-" + owner;
+  const eth = "GEMI-ETH-REFRESH-" + owner;
+  const event = { title: "ETH", ticker: "ETH", contracts: [{
+    instrumentSymbol: eth, label: "ETH", marketState: "open", prices: { bestBid: "0.40", bestAsk: "0.42" },
+  }] };
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [event] }));
+  const { id, settings } = await transact(owner, desk => {
+    desk.mode = "live";
+    desk.selected = btc;
+    desk.snapshots.push({ id: "known-btc", symbol: btc, at: new Date(Date.now() - 60_000).toISOString(), bid: 44, ask: 46,
+      mode: "live", title: "BTC", source: "https://api.gemini.com/v1/prediction-markets/events/BTC" });
+    const agent = desk.agents[0];
+    latest(agent).markets = [btc, eth];
+    const { markets: _, ...config } = latest(agent);
+    void _;
+    return { id: agent.id, settings: config };
+  });
+  const call = async (body: object) => {
+    const response = await POST(new NextRequest("http://localhost/api/desk", {
+      method: "POST", headers: { "content-type": "application/json", cookie: "agentdesk_session=" + owner },
+      body: JSON.stringify(body),
+    }));
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  try {
+    const saved = await call({ kind: "save", id, config: { ...settings, threshold: 4 } });
+    assert.equal(saved.desk.selected, btc);
+    assert.deepEqual(saved.desk.agents[0].versions.at(-1).markets, [btc, eth]);
+    await call({ kind: "mode", mode: "replay" });
+    const returned = await call({ kind: "mode", mode: "live" });
+    assert.equal(returned.desk.selected, btc);
+    assert.equal(returned.refreshed, false);
+  } finally {
+    await rm(`.agentdesk/${owner}.json`, { force: true });
+    await rm(`.agentdesk/quotes-${eth}.jsonl`, { force: true });
+  }
+});

@@ -55,6 +55,7 @@ export type BudgetChange = { id: string; agent: string; cap: number; budget: num
 export type Settlement = { symbol: string; outcome: "yes" | "no"; at: string; source?: string; payouts: { agent: string; contracts: number; cents: number }[] };
 export type Desk = {
   revision?: number;
+  liveSelected?: string;
   backfill?: HistoryBackfill;
   settlements?: Settlement[];
   agents: Agent[]; snapshots: Snapshot[]; decisions: Decision[]; purchases: Purchase[];
@@ -156,7 +157,12 @@ export function hasRun(desk: Desk, agent: Agent, quote: Snapshot) {
     !item.researchPurchase && sameObservation(item.snapshot, quote));
 }
 
-export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string, followUpOf?: string) {
+export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string, followUpOf?: string): Decision {
+  return recordIf(desk, agent, snapshot, input, tools, researchPurchase, followUpOf)!;
+}
+
+export function recordIf(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"],
+  researchPurchase?: string, followUpOf?: string, accept?: (decision: Decision) => boolean) {
   const config = latest(agent);
   if (followUpOf && desk.decisions.some(d => d.followUpOf === followUpOf)) throw new Error("A follow-up already exists.");
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
@@ -194,6 +200,18 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
   ] });
   const failed = validation.find(stage => !stage.ok);
   const fill = !failed && quantity > 0 ? { price, quantity, fee } : null;
+  const policy = failed?.detail ?? (fill ? "Paper order filled at the observed quote."
+    : proposal.action === "hold" ? "No order proposed."
+    : proposal.action === "sell" && position === 0 ? "No contracts to sell."
+    : proposal.action === "buy" && position >= config.positionLimit ? "Position limit reached."
+    : proposal.action === "buy" ? "Insufficient paper cash for one contract and the fee."
+    : "Sale proceeds would not cover the fee.");
+  const decision: Decision = {
+    id: crypto.randomUUID(), agent: agent.id, version: config.number, snapshot, at: new Date().toISOString(),
+    change: signal(desk, snapshot), ...proposal, ...(failed ? { action: "hold" as const, resource: undefined } : {}), researchPurchase, followUpOf, fill, tools, validation,
+    policy,
+  };
+  if (accept && !accept(decision)) return;
   if (fill) {
     const delta = proposal.action === "buy" ? quantity : -quantity;
     agent.positions[snapshot.symbol] = position + delta;
@@ -207,17 +225,7 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
     }
     agent.cash -= delta * price + fee;
   }
-  const policy = failed?.detail ?? (fill ? "Paper order filled at the observed quote."
-    : proposal.action === "hold" ? "No order proposed."
-    : proposal.action === "sell" && position === 0 ? "No contracts to sell."
-    : proposal.action === "buy" && position >= config.positionLimit ? "Position limit reached."
-    : proposal.action === "buy" ? "Insufficient paper cash for one contract and the fee."
-    : "Sale proceeds would not cover the fee.");
-  const decision: Decision = {
-    id: crypto.randomUUID(), agent: agent.id, version: config.number, snapshot, at: new Date().toISOString(),
-    change: signal(desk, snapshot), ...proposal, ...(failed ? { action: "hold" as const, resource: undefined } : {}), researchPurchase, followUpOf, fill, tools, validation, equityAfter: equity(desk, agent, snapshot),
-    policy,
-  };
+  decision.equityAfter = equity(desk, agent, snapshot);
   desk.decisions.push(decision);
   return decision;
 }

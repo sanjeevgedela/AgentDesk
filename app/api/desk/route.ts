@@ -31,7 +31,7 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("refresh-live") }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
-  z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema }),
+  z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema.partial({ markets: true }) }),
   z.object({ kind: z.literal("run"), id: uuid }),
   z.object({ kind: z.literal("ask-training"), id: uuid, modelId: z.string().regex(/^[0-9a-f]{20}$/).optional(), question: z.string().trim().min(1).max(600) }),
   z.object({ kind: z.literal("ask"), question: z.string().trim().min(1).max(600) }),
@@ -188,7 +188,10 @@ export async function POST(req: NextRequest) {
     }
     const wantsLive = input.kind === "refresh-live" || (input.kind === "mode" && input.mode === "live");
     const live = wantsLive ? await (async () => {
-      const { current, followed } = await transact(owner, desk => ({ current: currentSnapshot(desk), followed: followedQuotes(desk) }));
+      const { current, followed } = await transact(owner, desk => ({
+        current: desk.mode === "live" ? currentSnapshot(desk) : desk.snapshots.findLast(s => s.mode === "live" && s.symbol === desk.liveSelected),
+        followed: followedQuotes(desk),
+      }));
       if (input.kind === "refresh-live" && current?.mode !== "live") throw new Error("Switch to Live Gemini before refreshing.");
       return geminiSnapshots(current?.mode === "live" ? current.source.split("/").at(-1) : undefined,
         current?.mode === "live" ? [current, ...followed] : followed);
@@ -250,16 +253,20 @@ export async function POST(req: NextRequest) {
           return { desk, refreshed: live.some(quote => quote.symbol === desk.selected), runs: runLiveDesk(desk, live) };
         }
         case "mode":
+          if (desk.mode === "live") desk.liveSelected = desk.selected;
           desk.mode = input.mode;
           if (live) {
             keepRecentQuotes(desk, live);
-            if (!live.some(s => s.symbol === desk.selected)) desk.selected = live[0].symbol;
-            return { desk, refreshed: true, runs: runLiveDesk(desk, live) };
+            const saved = desk.liveSelected;
+            desk.selected = saved && desk.snapshots.some(s => s.mode === "live" && s.symbol === saved) ? saved : live[0].symbol;
+            desk.liveSelected = desk.selected;
+            return { desk, refreshed: live.some(quote => quote.symbol === desk.selected), runs: runLiveDesk(desk, live) };
           } else desk.selected = REPLAY_SYMBOL;
           break;
         case "select":
           if (!desk.snapshots.some(s => s.symbol === input.symbol && s.mode === desk.mode)) throw new Error("Market is unavailable.");
           desk.selected = input.symbol;
+          if (desk.mode === "live") desk.liveSelected = input.symbol;
           break;
         case "resolve":
           if (!desk.snapshots.some(quote => quote.symbol === input.symbol) && !desk.decisions.some(decision => decision.snapshot.symbol === input.symbol))
@@ -279,10 +286,11 @@ export async function POST(req: NextRequest) {
         case "save":
           if (!input.id) {
             if (desk.agents.length >= 12) throw new Error("A workspace can have up to 12 agents.");
-            desk.agents.push(newAgent(input.config));
+            if (!input.config.markets) throw new Error("Select at least one allowed market.");
+            desk.agents.push(newAgent({ ...input.config, markets: input.config.markets }));
           } else {
             const agent = agentFor(desk, input.id);
-            saveVersion(agent, input.config);
+            saveVersion(agent, { ...input.config, markets: input.config.markets ?? latest(agent).markets });
           }
           break;
         case "ask-training": return { answer: answerTraining(agentFor(desk, input.id), input.modelId, input.question) };
