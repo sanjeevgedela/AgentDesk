@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { TrainingRecord } from "./training";
+import { runPipeline, type Stage } from "./validate";
 import { guard, parseInstructions } from "./policy";
 
 export const INITIAL_CASH = 100_000;
@@ -18,7 +19,7 @@ export const configSchema = z.object({
 });
 export type Config = z.infer<typeof configSchema>;
 export type Version = Config & { number: number; at: string };
-export type Agent = { training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
+export type Agent = { riskDay?: Partial<Record<Snapshot["mode"], { day: string; open: number }>>; training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
 export type Snapshot = { id: string; symbol: string; title: string; bid: number; ask: number; at: string; source: string; mode: "replay" | "live" };
 export const proposalSchema = z.object({
   action: z.enum(["buy", "sell", "hold"]),
@@ -31,6 +32,8 @@ export type Decision = {
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
   resource?: typeof RESOURCE;
   researchPurchase?: string;
+  validation?: Stage[];
+  equityAfter?: number;
   fill: { quantity: number; price: number; fee: number } | null;
   tools: { name: string; result: string }[];
 };
@@ -38,6 +41,7 @@ export type Purchase = {
   id: string; agent: string; decision: string; amount: number; at: string;
   status: "blocked" | "pending" | "confirmed" | "simulated" | "failed" | "uncertain";
   reason: string; before: Proposal["action"]; after?: Proposal["action"]; evidence?: string;
+  validation?: Stage[];
   recipient?: string; mint?: string; signature?: string; programs?: string[];
 };
 export type BudgetChange = { id: string; agent: string; cap: number; budget: number; expires: number };
@@ -95,13 +99,21 @@ export function recommendation(config: Config, change: number | null): Proposal 
   const direction = config.strategy === "Contrarian" ? -change : change;
   return { action: direction > 0 ? "buy" : "sell", reason: `${config.strategy} signal from a ${change.toFixed(1)}¢ midpoint move.` };
 }
+export function equity(desk: Desk, agent: Agent, asOf?: Snapshot) {
+  return agent.cash + Object.entries(agent.positions).reduce((total, [symbol, position]) => {
+    const quote = asOf?.symbol === symbol ? asOf : desk.snapshots.findLast(item => item.symbol === symbol && (!asOf || item.at <= asOf.at));
+    return total + (quote ? position * (quote.bid + quote.ask) / 2 : 0);
+  }, 0);
+}
+
 export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string) {
   const config = latest(agent);
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
   if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number && d.researchPurchase === researchPurchase))
     throw new Error("This strategy version already ran on this snapshot.");
   const rules = parseInstructions(config.instructions);
-  const { proposal, reasons } = guard(input, snapshot, rules);
+  const parsed = proposalSchema.safeParse(input);
+  const { proposal, reasons } = guard(parsed.success ? parsed.data : { action: "hold", reason: "Proposal failed strict validation." }, snapshot, rules);
   const maxQty = Math.min(5, rules.maxQty ?? 5);
   tools = [...tools, { name: "policy_guard", result: reasons.join(". ") || `Passed; max order quantity ${maxQty}.` }];
   const position = agent.positions[snapshot.symbol] ?? 0;
@@ -109,21 +121,37 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
   const fee = 1;
   const quantity = proposal.action === "buy" ? Math.min(maxQty, config.positionLimit - position, Math.floor((agent.cash - fee) / price))
     : proposal.action === "sell" && price > fee ? Math.min(maxQty, position) : 0;
-  const fill = quantity > 0 ? { price, quantity, fee } : null;
+  const before = equity(desk, agent, snapshot);
+  const day = snapshot.at.slice(0, 10);
+  const previous = agent.riskDay?.[snapshot.mode];
+  const open = previous?.day === day ? previous.open : before;
+  if (!previous || day >= previous.day) agent.riskDay = { ...agent.riskDay, [snapshot.mode]: { day, open } };
+  const risk = snapshot.mode === "live" && Date.now() - Date.parse(snapshot.at) > 900_000 ? "Live quote is older than 15 minutes."
+    : proposal.action === "buy" && before < open * .90 ? "Daily loss circuit breaker blocked this buy."
+    : quantity > 0 && quantity * price > before * .05 ? "Order notional exceeds 5% of paper equity."
+    : undefined;
+  const validation = runPipeline({ at: snapshot.at, checks: [
+    { name: "schema", check: () => ({ ok: parsed.success, detail: parsed.success ? "Strict proposal schema passed." : "Invalid proposal shape." }) },
+    { name: "policy", check: () => ({ ok: !reasons.length, detail: reasons.join(". ") || "Saved policy passed." }) },
+    { name: "risk", check: () => ({ ok: !risk, detail: risk ?? "Exposure, notional, daily loss and quote age checked." }) },
+    { name: "execute", check: () => ({ ok: true, detail: quantity > 0 ? "Paper fill computed." : "No paper fill." }) },
+  ] });
+  const failed = validation.find(stage => !stage.ok);
+  const fill = !failed && quantity > 0 ? { price, quantity, fee } : null;
   if (fill) {
     const delta = proposal.action === "buy" ? quantity : -quantity;
     agent.positions[snapshot.symbol] = position + delta;
     agent.cash -= delta * price + fee;
   }
-  const policy = fill ? "Paper order filled at the observed quote."
+  const policy = failed?.detail ?? (fill ? "Paper order filled at the observed quote."
     : proposal.action === "hold" ? "No order proposed."
     : proposal.action === "sell" && position === 0 ? "No contracts to sell."
     : proposal.action === "buy" && position >= config.positionLimit ? "Position limit reached."
     : proposal.action === "buy" ? "Insufficient paper cash for one contract and the fee."
-    : "Sale proceeds would not cover the fee.";
+    : "Sale proceeds would not cover the fee.");
   const decision: Decision = {
     id: crypto.randomUUID(), agent: agent.id, version: config.number, snapshot, at: new Date().toISOString(),
-    change: signal(desk, snapshot), ...proposal, researchPurchase, fill, tools,
+    change: signal(desk, snapshot), ...proposal, ...(failed ? { action: "hold" as const, resource: undefined } : {}), researchPurchase, fill, tools, validation, equityAfter: equity(desk, agent, snapshot),
     policy,
   };
   desk.decisions.push(decision);

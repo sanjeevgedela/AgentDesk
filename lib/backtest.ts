@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { INITIAL_CASH, newDesk, record, recommendation, type Config, type Snapshot } from "./engine";
-import { evaluateInstructions } from "./instructions";
+import { INITIAL_CASH, newDesk, record, type Config, type Snapshot } from "./engine";
+import { evaluateRun } from "./runner";
 
 export type Bar = { bid: number; ask: number; at: string };
 export type Arm = Pick<Config, "threshold" | "positionLimit">;
@@ -53,8 +53,7 @@ export function simulate(bars: Bar[], config: Config, slippageCents = 0, choose?
     const change = i > 0 ? (bar.bid + bar.ask - bars[i - 1].bid - bars[i - 1].ask) / 2 : null;
     const quote = { ...observation, bid: Math.max(0, bar.bid - slippageCents), ask: Math.min(100, bar.ask + slippageCents) };
     desk.snapshots = i ? [{ ...observation, ...bars[i - 1], id: String(i - 1) }, observation] : [observation];
-    const instruction = evaluateInstructions(config.instructions, observation).matched;
-    const proposal = choose ? { action: choose(i), reason: "Evaluation baseline" } : instruction ?? recommendation(config, change);
+    const proposal = choose ? { action: choose(i), reason: "Evaluation baseline" } : evaluateRun(agent.versions[0], observation, change).proposal;
     const decision = record(desk, agent, quote, proposal, []);
     desk.decisions = [];
     actions.push(decision.action);
