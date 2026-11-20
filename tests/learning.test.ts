@@ -153,3 +153,96 @@ test("stop-loss can recover a legacy fill basis and still obeys sell policy", as
   assert.equal(result.validation?.at(-1)?.name, "policy");
   assert.equal(agent.positions[quote.symbol], 5);
 });
+
+test("live refresh runs the current strategy once and watches an enabled stop with strategy automation off", async () => {
+  const { runLiveDesk } = await import("../lib/autopilot");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  const symbol = "GEMI-STOP-TEST";
+  Object.assign(latest(agent), { markets: [symbol], stopLossPct: 10 });
+  const quote = (id: string, bid: number, ask: number, age: number) => ({
+    ...currentSnapshot(desk)!, id, symbol, bid, ask, mode: "live" as const,
+    at: new Date(Date.now() - age).toISOString(),
+  });
+  const first = quote("entry-prev", 37, 39, 60_000);
+  const second = quote("entry", 44, 45, 40_000);
+  desk.snapshots.push(first, second);
+  assert.equal(runLiveDesk(desk, [second]), 1);
+  assert.equal(agent.positions[symbol], 5);
+  assert.equal(runLiveDesk(desk, [{ ...second, id: "same-observation" }]), 0);
+
+  latest(agent).auto = false;
+  const aboveStop = quote("above", 43, 44, 30_000);
+  desk.snapshots.push(aboveStop);
+  assert.equal(runLiveDesk(desk, [aboveStop]), 0);
+  const loss = quote("loss", 39, 40, 20_000);
+  desk.snapshots.push(loss);
+  assert.equal(runLiveDesk(desk, [loss]), 1);
+  const exit = desk.decisions.at(-1)!;
+  assert.equal(exit.action, "sell");
+  assert.equal(exit.fill?.price, 39);
+  assert.ok(exit.tools.some(tool => tool.name === "stop_loss"));
+  assert.equal(agent.positions[symbol], 0);
+  assert.equal(runLiveDesk(desk, [loss, second]), 0);
+  assert.equal(desk.decisions.length, 2);
+});
+
+test("automatic refresh skips overlapping unchanged observations and paused agents", async () => {
+  const { runLiveDesk } = await import("../lib/autopilot");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  const symbol = "GEMI-OVERLAP-TEST";
+  latest(agent).markets = [symbol];
+  const now = Date.now();
+  const first = { ...currentSnapshot(desk)!, id: "first-quote", mode: "live" as const, symbol, at: new Date(now - 1000).toISOString() };
+  desk.snapshots.push(first);
+  assert.equal(runLiveDesk(desk, [first]), 1);
+  const repeat = { ...first, id: "overlap", at: new Date(now).toISOString() };
+  desk.snapshots.push(repeat);
+  assert.equal(runLiveDesk(desk, [repeat]), 0);
+  latest(agent).active = false;
+  const moved = { ...repeat, id: "paused", bid: 45, ask: 47, at: new Date(now + 1000).toISOString() };
+  desk.snapshots.push(moved);
+  assert.equal(runLiveDesk(desk, [moved]), 0);
+});
+
+test("overlapping refresh API requests make only one stop-loss fill", async t => {
+  const { rm } = await import("node:fs/promises");
+  const { NextRequest } = await import("next/server");
+  const { POST } = await import("../app/api/desk/route");
+  const { transact } = await import("../lib/store");
+  const owner = crypto.randomUUID();
+  const symbol = "GEMI-STOP-API-" + owner;
+  const event = { title: "Test", ticker: "TEST", contracts: [{
+    instrumentSymbol: symbol, label: "Test", marketState: "open", prices: { bestBid: "0.40", bestAsk: "0.42" },
+  }] };
+  t.mock.method(globalThis, "fetch", async (input: string) =>
+    Response.json(input.endsWith("/TEST") ? event : { data: [event] }));
+  await transact(owner, desk => {
+    desk.mode = "live";
+    desk.selected = symbol;
+    desk.snapshots.push({ id: "previous", symbol, at: new Date(Date.now() - 60_000).toISOString(), bid: 49, ask: 50,
+      mode: "live", title: "Test", source: "https://api.gemini.com/v1/prediction-markets/events/TEST" });
+    const agent = desk.agents[0];
+    agent.positions[symbol] = 10;
+    agent.entryPrices = { [symbol]: 50 };
+    Object.assign(latest(agent), { markets: [symbol], auto: false, stopLossPct: 10 });
+  });
+  try {
+    const refresh = () => POST(new NextRequest("http://localhost/api/desk", {
+      method: "POST", headers: { "content-type": "application/json", cookie: "agentdesk_session=" + owner },
+      body: JSON.stringify({ kind: "refresh-live" }),
+    }));
+    const responses = await Promise.all([refresh(), refresh()]);
+    assert.ok(responses.every(response => response.ok));
+    const result = await Promise.all(responses.map(response => response.json()));
+    assert.equal(result.reduce((sum, value) => sum + value.runs, 0), 1);
+    await transact(owner, desk => {
+      assert.equal(desk.agents[0].positions[symbol], 5);
+      assert.deepEqual(desk.decisions.map(decision => [decision.action, decision.fill?.price]), [["sell", 40]]);
+    });
+  } finally {
+    await rm(`.agentdesk/${owner}.json`, { force: true });
+    await rm(`.agentdesk/quotes-${symbol}.jsonl`, { force: true });
+  }
+});

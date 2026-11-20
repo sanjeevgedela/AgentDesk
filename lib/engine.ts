@@ -142,11 +142,20 @@ export function positionMark(desk: Desk, agent: Agent, quote: Snapshot) {
   return { entry, stop, triggered: stop !== undefined && quote.bid <= stop, unrealized: position * (quote.bid - entry) };
 }
 
+export function sameObservation(a: Snapshot, b: Snapshot) {
+  return a.mode === b.mode && a.symbol === b.symbol && (a.id === b.id || a.at === b.at);
+}
+
+export function hasRun(desk: Desk, agent: Agent, quote: Snapshot) {
+  return desk.decisions.find(item => item.agent === agent.id && item.version === latest(agent).number &&
+    !item.researchPurchase && sameObservation(item.snapshot, quote));
+}
+
 export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string, followUpOf?: string) {
   const config = latest(agent);
   if (followUpOf && desk.decisions.some(d => d.followUpOf === followUpOf)) throw new Error("A follow-up already exists.");
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
-  if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number && d.researchPurchase === researchPurchase))
+  if (desk.decisions.some(d => d.agent === agent.id && sameObservation(d.snapshot, snapshot) && d.version === config.number && d.researchPurchase === researchPurchase))
     throw new Error("This strategy version already ran on this snapshot.");
   const rules = parseInstructions(config.instructions);
   const parsed = proposalSchema.safeParse(input);

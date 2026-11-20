@@ -16,7 +16,7 @@ export function evaluateRun(version: Version, snapshot: Snapshot, change: number
   };
 }
 
-export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string) {
+export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly = false) {
   const version = latest(agent);
   const model = agent.fittedModels?.find(item => item.id === version.modelId);
   const previous = desk.snapshots.findLast(quote => quote.mode === snapshot.mode && quote.symbol === snapshot.symbol && quote.at < snapshot.at);
@@ -25,7 +25,7 @@ export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal
   const forecast = usable && predict(model.artifact, snapshot, previous);
   const inference = typeof forecast === "number" && model
     ? { modelId: model.id, horizon: model.artifact.config.horizon, change: forecast } : undefined;
-  if (version.modelId && source !== "saved_instruction") {
+  if (!stopOnly && version.modelId && source !== "saved_instruction") {
     source = inference ? "fitted_model" : "model_unavailable";
     if (inference) {
       const move = version.strategy === "Contrarian" ? -inference.change : inference.change;
@@ -34,10 +34,14 @@ export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal
         ...(version.strategy === "Evidence-driven" && Math.abs(move) >= version.threshold ? { resource: "spread-review" as const } : {}) };
     } else proposal = { action: "hold", reason: "The active model needs a matching market and a quote after its dataset cutoff." };
   }
+  if (stopOnly) {
+    proposal = { action: "hold", reason: "Automatic watch only checks the configured stop-loss." };
+    source = "stop_watch";
+  }
   const decision = record(desk, agent, snapshot, proposal, [
     { name: "market_snapshot", result: snapshot.source },
     { name: source, result: proposal.reason },
   ]);
-  if (inference) decision.forecast = inference;
+  if (!stopOnly && inference) decision.forecast = inference;
   return decision;
 }

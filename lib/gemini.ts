@@ -7,12 +7,13 @@ const contract = z.object({
 });
 const eventSchema = z.object({ title: z.string(), ticker: z.string(), contracts: z.array(z.unknown()) });
 
-export async function geminiSnapshots(preferredEvent?: string): Promise<Snapshot[]> {
+export async function geminiSnapshots(preferredEvent?: string, followed: Snapshot[] = []): Promise<Snapshot[]> {
   const endpoint = "https://api.gemini.com/v1/prediction-markets/events";
+  const at = new Date().toISOString();
   const res = await fetch(endpoint + "?status=active&limit=25", { cache: "no-store", signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status}. Retry or choose Replay.`);
   const { data } = z.object({ data: z.array(eventSchema) }).parse(await res.json());
-  const tracked = [...new Set([preferredEvent ?? "", ...(process.env.GEMINI_EVENT_TICKERS ?? "").split(",")]
+  const tracked = [...new Set([preferredEvent ?? "", ...followed.map(quote => quote.source.split("/").at(-1) ?? ""), ...(process.env.GEMINI_EVENT_TICKERS ?? "").split(",")]
     .map(ticker => ticker.trim()).filter(ticker => /^[\w-]{1,120}$/.test(ticker)))].slice(0, 10);
   const extras = await Promise.allSettled(tracked.map(async ticker => {
     const response = await fetch(endpoint + "/" + encodeURIComponent(ticker), { cache: "no-store", signal: AbortSignal.timeout(8000) });
@@ -21,17 +22,18 @@ export async function geminiSnapshots(preferredEvent?: string): Promise<Snapshot
   }));
   const events = [...new Map([...extras.flatMap(extra => extra.status === "fulfilled" ? [extra.value] : []), ...data]
     .map(event => [event.ticker, event])).values()];
-  const at = new Date().toISOString();
   const snapshots = events.flatMap(event => event.contracts.flatMap(raw => {
     const parsed = contract.safeParse(raw);
     if (!parsed.success) return [];
     const { instrumentSymbol, label, prices: { bestBid: bid, bestAsk: ask } } = parsed.data;
-    if (bid <= 0 || ask >= 100 || bid > ask) return [];
-    return [{ id: crypto.randomUUID(), symbol: instrumentSymbol, mode: "live" as const,
+    if (ask <= 0 || bid > ask) return [];
+    return [{ id: instrumentSymbol + "/" + at, symbol: instrumentSymbol, mode: "live" as const,
       bid, ask, title: event.title + " · " + label, at, source: endpoint + "/" + encodeURIComponent(event.ticker) }];
   }));
   if (!snapshots.length) throw new Error("Gemini returned no open contracts with usable quotes.");
-  return snapshots.slice(0, 25);
+  const priorities = new Set(followed.map(quote => quote.symbol));
+  return [...new Map([...snapshots.filter(quote => priorities.has(quote.symbol)), ...snapshots]
+    .map(quote => [quote.symbol, quote])).values()].slice(0, 25);
 }
 
 export async function geminiResolutions() {

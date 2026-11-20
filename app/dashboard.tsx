@@ -6,9 +6,9 @@ import { DecisionAudit, ValidationSteps } from "./components/audit";
 import { FittedTraining } from "./components/fitted-training";
 import { MarketChart, type QuotePoint } from "./components/market-chart";
 import { PolicyPreview, Sparkline, TrainingPanel } from "./components/training";
-import { agentStats, currentSnapshot, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
+import { agentStats, currentSnapshot, hasRun, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
 
-type Payload = { refreshed?: boolean; proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
+type Payload = { runs?: number; refreshed?: boolean; proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -36,6 +36,7 @@ function DeskView() {
   const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; quotes: QuotePoint[]; backfill?: z.infer<typeof historySchema>["backfill"] }>();
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshMessage, setRefreshMessage] = useState("");
+  const [automaticRuns, setAutomaticRuns] = useState<number>();
   const [trainingAgent, setTrainingAgent] = useState("");
   const [editing, setEditing] = useState<Agent | "new">();
   const [addMarket, setAddMarket] = useState(false);
@@ -52,6 +53,7 @@ function DeskView() {
     const payload = await response.json() as Payload;
     if (!response.ok) throw new Error(payload.error || "AgentDesk could not complete the request.");
     if (payload.desk) setDesk(payload.desk);
+    if (payload.runs !== undefined) setAutomaticRuns(payload.runs);
     if (payload.auth !== undefined) setAuth(payload.auth);
     if (payload.operatorAccess !== undefined) setOperatorAccess(payload.operatorAccess);
     if (payload.model !== undefined) setModel(payload.model);
@@ -186,7 +188,7 @@ function DeskView() {
     const config = { name: data.get("name"), strategy: data.get("strategy"), instructions: data.get("instructions"),
       threshold: Number(data.get("threshold")), positionLimit: Number(data.get("limit")),
       stopLossPct: data.get("stopLoss") ? Number(data.get("stopLoss")) : undefined,
-      auto: auth ? data.has("auto") : undefined, markets: String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean), active: data.has("active") };
+      auto: data.has("auto"), markets: String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean), active: data.has("active") };
     return perform("Saving strategy", async () => {
       await request({ kind: "save", config, id: editing === "new" ? undefined : editing?.id });
       setEditing(undefined);
@@ -265,6 +267,7 @@ function DeskView() {
               </small>}
               {snapshot.mode === "live" && <div className="history-mini live-controls">
                 <label className="check"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} /> Refresh live quotes every 20 seconds</label>
+                <small>Fresh quotes run eligible paper agents and check configured stop-losses. {automaticRuns !== undefined && `Last refresh: ${automaticRuns} decision${automaticRuns === 1 ? "" : "s"} recorded.`}</small>
                 <small>{matchingHistory ? `${matchingHistory.count} recent recorded observations · SHA-256 ${matchingHistory.hash.slice(0, 12)}…` : "Loading recorded history…"}</small>
                 {matchingHistory?.backfill && <small>
                   {matchingHistory.backfill.status === "empty" ? "Gemini returned no contract price history for backfill."
@@ -283,7 +286,7 @@ function DeskView() {
             <div className="agents">{desk.agents.map((agent, i) => {
               const config = latest(agent);
               const decision = desk.decisions.findLast(d => d.agent === agent.id);
-              const currentDecision = desk.decisions.findLast(d => d.agent === agent.id && d.snapshot.id === snapshot?.id && d.version === config.number && !d.researchPurchase);
+              const currentDecision = snapshot && hasRun(desk, agent, snapshot);
               const latestRun = decision?.id === runResult?.id ? decision : currentDecision;
               const stats = agentStats(desk, agent);
               const mark = snapshot && positionMark(desk, agent, snapshot);
@@ -423,8 +426,9 @@ function DeskView() {
       <label>Stop-loss (% below average entry)
         <input name="stopLoss" type="number" min={1} max={99} step={1} placeholder="Off" defaultValue={initial.stopLossPct ?? ""} />
       </label>
-      <small>Uses the latest bid when the agent runs. Scheduled paper runs also check it when enabled.</small>
-      {auth && <label className="check"><input name="auto" type="checkbox" defaultChecked={initial.auto ?? false} /> Scheduled paper runs and retraining</label>}
+      <small>Active agents check a configured stop-loss on fresh live quotes, even with automatic strategy runs off.</small>
+      <label className="check"><input name="auto" type="checkbox" defaultChecked={initial.auto ?? true} /> Run paper strategy automatically in Live Gemini</label>
+      {auth && <small>This setting also enables scheduled strategy runs when the server collector is configured.</small>}
       <label className="check"><input name="active" type="checkbox" defaultChecked={initial.active ?? true} /> Active</label>
       <div className="dialog-actions"><button type="button" className="quiet" onClick={() => setEditing(undefined)}>Cancel</button><button className="primary" disabled={!!busy}>Save strategy</button></div></form></div>}
     {funding && <div className="overlay"><form className="panel dialog" onSubmit={e => {

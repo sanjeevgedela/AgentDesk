@@ -1,9 +1,10 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  advance, agentStats, configSchema, currentSnapshot, keepRecentQuotes, latest, newAgent, recommendation, record,
-  REPLAY_SYMBOL, reserve, reserved, resolve, saveVersion, signal, type Agent, type Desk, type Snapshot, type Proposal,
+  advance, agentStats, configSchema, currentSnapshot, hasRun, keepRecentQuotes, latest, newAgent, recommendation, record,
+  REPLAY_SYMBOL, reserve, reserved, resolve, saveVersion, sameObservation, signal, type Agent, type Desk, type Snapshot, type Proposal,
 } from "../../../lib/engine";
+import { followedQuotes, runLiveDesk } from "../../../lib/autopilot";
 import { fitConfig } from "../../../lib/fitted";
 import { fitAgent, trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
@@ -183,13 +184,13 @@ export async function POST(req: NextRequest) {
         return { desk };
       }));
     }
-    const refreshTarget = input.kind === "refresh-live" ? await transact(owner, desk => {
-      const current = currentSnapshot(desk);
-      return current?.mode === "live" ? current : undefined;
-    }) : undefined;
-    if (input.kind === "refresh-live" && !refreshTarget) throw new Error("Switch to Live Gemini before refreshing.");
-    const live = refreshTarget || (input.kind === "mode" && input.mode === "live")
-      ? await geminiSnapshots(refreshTarget?.source.split("/").at(-1)) : null;
+    const wantsLive = input.kind === "refresh-live" || (input.kind === "mode" && input.mode === "live");
+    const live = wantsLive ? await (async () => {
+      const { current, followed } = await transact(owner, desk => ({ current: currentSnapshot(desk), followed: followedQuotes(desk) }));
+      if (input.kind === "refresh-live" && current?.mode !== "live") throw new Error("Switch to Live Gemini before refreshing.");
+      return geminiSnapshots(current?.mode === "live" ? current.source.split("/").at(-1) : undefined,
+        current?.mode === "live" ? [current, ...followed] : followed);
+    })() : null;
     if (live) await appendQuotes(live);
     if (input.kind === "run") {
       const original = await transact(owner, desk => {
@@ -200,7 +201,7 @@ export async function POST(req: NextRequest) {
         if (!version.active) throw new Error("This agent is paused. Activate it in Edit.");
         if (!version.markets.includes(snapshot.symbol))
           throw new Error(`Allow ${snapshot.symbol} in this agent’s settings before running it.`);
-        const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === version.number && !d.researchPurchase);
+        const existing = hasRun(desk, agent, snapshot);
         const change = signal(desk, snapshot);
         return { snapshot, version, change, existing, desk };
       });
@@ -221,9 +222,10 @@ export async function POST(req: NextRequest) {
 
       const outcome = await transact(owner, desk => {
         const agent = agentFor(desk, input.id);
-        if (latest(agent).number !== original.version.number || currentSnapshot(desk)?.id !== original.snapshot.id)
+        const current = currentSnapshot(desk);
+        if (latest(agent).number !== original.version.number || !current || !sameObservation(current, original.snapshot))
           throw new Error("The strategy or market changed during this run. Try again.");
-        const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === original.snapshot.id && d.version === original.version.number && !d.researchPurchase);
+        const existing = hasRun(desk, agent, original.snapshot);
         if (existing) return { desk, decision: existing, reused: true };
         const decision = recordRun(desk, agent, original.snapshot, proposal, source);
         if (auth) queueAnchor(decision, latest(agent));
@@ -238,14 +240,17 @@ export async function POST(req: NextRequest) {
           if (desk.mode !== "replay") throw new Error("Switch to replay before advancing.");
           advance(desk);
           break;
-        case "refresh-live":
-          if (desk.mode === "live" && live) keepRecentQuotes(desk, live);
-          return { desk, refreshed: !!live?.some(quote => quote.symbol === desk.selected) };
+        case "refresh-live": {
+          if (desk.mode !== "live" || !live) return { desk, refreshed: false, runs: 0 };
+          keepRecentQuotes(desk, live);
+          return { desk, refreshed: live.some(quote => quote.symbol === desk.selected), runs: runLiveDesk(desk, live) };
+        }
         case "mode":
           desk.mode = input.mode;
           if (live) {
             keepRecentQuotes(desk, live);
             if (!live.some(s => s.symbol === desk.selected)) desk.selected = live[0].symbol;
+            return { desk, refreshed: true, runs: runLiveDesk(desk, live) };
           } else desk.selected = REPLAY_SYMBOL;
           break;
         case "select":
@@ -268,7 +273,6 @@ export async function POST(req: NextRequest) {
         case "train":
           return trainAgent(agentFor(desk, input.id), input.symbol ?? desk.selected, input.synthetic).then(training => ({ desk, training }));
         case "save":
-          if (!auth && input.config.auto) throw new Error("Scheduled agents are available in the operator workspace.");
           if (!input.id) {
             if (desk.agents.length >= 12) throw new Error("A workspace can have up to 12 agents.");
             desk.agents.push(newAgent(input.config));
