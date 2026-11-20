@@ -3,6 +3,7 @@ import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { z } from "zod";
 import { DecisionAudit, ValidationSteps } from "./components/audit";
+import { FittedTraining } from "./components/fitted-training";
 import { MarketChart, type QuotePoint } from "./components/market-chart";
 import { PolicyPreview, Sparkline, TrainingPanel } from "./components/training";
 import { agentStats, currentSnapshot, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
@@ -11,7 +12,7 @@ type Payload = { refreshed?: boolean; proof?: { state: string }; desk?: Desk; au
 type Action = Record<string, unknown> & { kind: string };
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const historySchema = z.object({ bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
+const historySchema = z.object({ backfill: z.object({ status: z.enum(["available", "unavailable", "empty"]), source: z.string(), points: z.array(z.object({ at: z.iso.datetime(), cents: z.number() })) }).optional(), bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
 const suggestions = ["Why did the agents disagree?", "How much research did each agent buy?", "What changed between strategy versions?"];
 
 export default function Dashboard() {
@@ -32,7 +33,7 @@ function DeskView() {
   const busy = operation || running;
   const [error, setError] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; quotes: QuotePoint[] }>();
+  const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; quotes: QuotePoint[]; backfill?: z.infer<typeof historySchema>["backfill"] }>();
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshMessage, setRefreshMessage] = useState("");
   const [trainingAgent, setTrainingAgent] = useState("");
@@ -105,11 +106,11 @@ function DeskView() {
     if (!snapshot || snapshot.mode === "replay") return;
     const controller = new AbortController();
     const symbol = snapshot.symbol;
-    void fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&limit=250`, { signal: controller.signal })
+    void fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&limit=5000`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : Promise.reject(new Error("History unavailable")))
       .then(raw => {
         const parsed = historySchema.parse(raw);
-        setHistory({ symbol, count: parsed.bars.length, hash: parsed.hash, quotes: parsed.bars.slice(-120) });
+        setHistory({ symbol, count: parsed.bars.length, hash: parsed.hash, quotes: parsed.bars, backfill: parsed.backfill });
       }).catch(() => {});
     return () => controller.abort();
   }, [snapshot]);
@@ -117,7 +118,7 @@ function DeskView() {
   const matchingHistory = desk?.mode === "live" && history?.symbol === desk.selected ? history : undefined;
   const series = desk?.snapshots.filter(s => s.symbol === desk.selected && s.mode === desk.mode) ?? [];
   const chartQuotes = [...new Map([...(matchingHistory?.quotes ?? []), ...series].map(item => [item.at, item])).values()]
-    .sort((a, b) => a.at.localeCompare(b.at)).slice(-120);
+    .sort((a, b) => a.at.localeCompare(b.at));
   const selectedTrainingAgent = desk?.agents.find(agent => agent.id === trainingAgent) ?? desk?.agents[0];
   const trainingCount = matchingHistory?.count ?? 0;
   const allowedToTrain = !!snapshot && !!selectedTrainingAgent && latest(selectedTrainingAgent).markets.includes(snapshot.symbol);
@@ -252,11 +253,28 @@ function DeskView() {
                   })}>Refresh quotes</button>}</div>
             {desk.mode === "live" && <label className="select-market">Market<select disabled={!!busy} value={desk.selected} onChange={e => act("Selecting market", { kind: "select", symbol: e.target.value })}>{markets.map(s => <option key={s.symbol} value={s.symbol}>{s.title}</option>)}</select></label>}
             {snapshot && <><div className="quote"><strong>{((snapshot.bid + snapshot.ask) / 2).toFixed(1)}¢</strong><span>YES midpoint</span><span>Bid {snapshot.bid}¢</span><span>Ask {snapshot.ask}¢</span></div>
-              <MarketChart key={snapshot.symbol} quotes={chartQuotes} />
+              <MarketChart key={snapshot.symbol} quotes={chartQuotes} signals={desk.decisions
+                .filter(decision => decision.snapshot.symbol === snapshot.symbol && decision.snapshot.mode === snapshot.mode)
+                .slice(-40).map(decision => ({ id: decision.id, at: decision.snapshot.at,
+                  label: `${decision.action} ${decision.fill ? "paper fill" : "decision"}${decision.forecast ? ` · forecast ${decision.forecast.change.toFixed(2)}¢ / ${decision.forecast.horizon} observations` : ""}` }))} />
               <div className="market-foot"><span>{snapshot.symbol}</span><span>Latest observed {date(snapshot.at)}</span></div>
+              {snapshot.mode === "live" && chartQuotes.length > 0 && <small>
+                Chart coverage {date(chartQuotes[0].at)} – {date(chartQuotes[chartQuotes.length - 1].at)} · Gemini recorded bid/ask.
+                {Date.parse(chartQuotes[chartQuotes.length - 1].at) - Date.parse(chartQuotes[0].at) < 432_000_000 && " Five-day history is not available for this chart."}
+                {chartQuotes.some((quote, i) => i > 0 && Date.parse(quote.at) - Date.parse(chartQuotes[i - 1].at) > 600_000) && " Gaps over 10 minutes are present."}
+              </small>}
               {snapshot.mode === "live" && <div className="history-mini live-controls">
                 <label className="check"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} /> Refresh live quotes every 20 seconds</label>
                 <small>{matchingHistory ? `${matchingHistory.count} recent recorded observations · SHA-256 ${matchingHistory.hash.slice(0, 12)}…` : "Loading recorded history…"}</small>
+                {matchingHistory?.backfill && <small>
+                  {matchingHistory.backfill.status === "empty" ? "Gemini returned no contract price history for backfill."
+                    : matchingHistory.backfill.status === "unavailable" ? "Gemini history lookup unavailable. Any cached prices are shown below."
+                    : "Gemini historical contract prices, separate from bid/ask observations."}
+                </small>}
+                {!!matchingHistory?.backfill?.points.length && <>
+                  <small>{date(matchingHistory.backfill.points[0].at)} – {date(matchingHistory.backfill.points.at(-1)!.at)}</small>
+                  <Sparkline values={matchingHistory.backfill.points.map(point => point.cents)} label="Gemini historical contract prices" />
+                </>}
                 {refreshMessage && <p role="status">{refreshMessage}</p>}
               </div>}
             </>}
@@ -274,7 +292,7 @@ function DeskView() {
               const baseline = firstAsk === undefined ? [] : marketDecisions.map(item => INITIAL_CASH - firstAsk - 1 + (item.snapshot.bid + item.snapshot.ask) / 2);
               const needsMarket = snapshot && !config.markets.includes(snapshot.symbol);
               const runSource = latestRun?.tools.findLast(tool => tool.name !== "policy_guard")?.name;
-              const sourceLabel = runSource === "stop_loss" ? "Stop-loss" : runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "paid_research" || runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
+              const sourceLabel = runSource === "fitted_model" ? "Fitted model" : runSource === "stop_loss" ? "Stop-loss" : runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "paid_research" || runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
               return <article className="panel agent" key={agent.id}>
                 <div className="agent-top"><span className={`agent-icon tone-${i % 3}`}>{i % 3 === 0 ? <span className="trend-glyph" /> : ["⇄", "◇"][i % 3 - 1]}</span><span className={`pill ${config.active ? "good" : ""}`}>{config.active ? "Active" : "Paused"}</span></div>
                 <h3>{config.name}</h3><p>{config.strategy} · v{config.number}</p>
@@ -311,7 +329,7 @@ function DeskView() {
           <section className="panel training-desk" id="training" aria-labelledby="training-heading">
             <div className="section-head">
               <div><span className="eyebrow">Strategy research</span><h2 id="training-heading">Agent training</h2><p className="empty">Tune entry thresholds and position limits, then compare the candidate with the current strategy on held-out quotes.</p></div>
-              <label>Training agent<select value={selectedTrainingAgent?.id ?? ""} onChange={event => setTrainingAgent(event.target.value)}>
+              <label>Training agent<select aria-label="Training agent" value={selectedTrainingAgent?.id ?? ""} onChange={event => setTrainingAgent(event.target.value)}>
                 {desk.agents.map(agent => <option key={agent.id} value={agent.id}>{latest(agent).name}</option>)}
               </select></label>
             </div>
@@ -324,14 +342,28 @@ function DeskView() {
             {!auth && <p className="empty">{operatorAccess ? "Open Operator access to run training." : "Training runs are available in the operator workspace. Enable operator access in the server settings."}</p>}
             {auth && !allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
             {desk.mode === "live" && trainingCount < 120 && <p className="empty">Training on live history needs 120 observations for the same market.</p>}
+            {selectedTrainingAgent && <FittedTraining key={"fit-" + selectedTrainingAgent.id} models={selectedTrainingAgent.fittedModels ?? []}
+              active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator={auth}
+              fit={async (config, synthetic) => {
+                if (!snapshot) throw new Error("Select a market before fitting.");
+                if (synthetic && snapshot.mode !== "replay") throw new Error("Switch to Replay before fitting a SYNTHETIC model.");
+                setBusy("Fitting forecast model");
+                try { await request({ kind: "fit", id: selectedTrainingAgent.id, symbol: snapshot.symbol, synthetic, config }); }
+                finally { setBusy(""); }
+              }}
+              activate={async modelId => {
+                setBusy("Activating fitted model");
+                try { await request({ kind: "activate-model", id: selectedTrainingAgent.id, modelId }); }
+                finally { setBusy(""); }
+              }} />}
             {selectedTrainingAgent?.training?.length
-              ? <TrainingPanel key={selectedTrainingAgent.id} training={selectedTrainingAgent.training[selectedTrainingAgent.training.length - 1]} />
+              ? <TrainingPanel key={"tuning-" + selectedTrainingAgent.id} training={selectedTrainingAgent.training[selectedTrainingAgent.training.length - 1]} />
               : <p className="empty">No saved training report for this agent.</p>}
           </section>
           <div className="details">
             <section className="panel feed" id="activity"><h2>Decision log</h2>
               {!desk.decisions.length && <p className="empty">Run an agent to record its signal, recommendation and simulated fill.</p>}
-              {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}
+              {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.forecast && <p>Model {d.forecast.modelId} · {d.forecast.change.toFixed(2)}¢ predicted midpoint change over {d.forecast.horizon} observations</p>}{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}
                 <DecisionAudit decision={d} busy={!!busy} verify={() => perform("Verifying decision memo", async () => {
                   const result = await request({ kind: "verify-anchor", id: d.id });
                   if (result.proof?.state === "uncertain") throw new Error("Solana RPC has not confirmed the memo yet.");

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { HistoryBackfill } from "./backfill";
+import type { FittedModel } from "./fitted";
 import type { Anchor } from "./anchor";
 import type { TrainingRecord } from "./training";
 import { runPipeline, type Stage } from "./validate";
@@ -20,8 +22,8 @@ export const configSchema = z.object({
   stopLossPct: z.number().int().min(1).max(99).optional(),
 });
 export type Config = z.infer<typeof configSchema>;
-export type Version = Config & { number: number; at: string };
-export type Agent = { entryPrices?: Record<string, number>; riskDay?: Partial<Record<Snapshot["mode"], { day: string; open: number }>>; training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
+export type Version = Config & { number: number; at: string; modelId?: string };
+export type Agent = { fittedModels?: FittedModel[]; entryPrices?: Record<string, number>; riskDay?: Partial<Record<Snapshot["mode"], { day: string; open: number }>>; training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
 export type Snapshot = { id: string; symbol: string; title: string; bid: number; ask: number; at: string; source: string; mode: "replay" | "live" };
 export const proposalSchema = z.object({
   action: z.enum(["buy", "sell", "hold"]),
@@ -32,6 +34,7 @@ export type Proposal = z.infer<typeof proposalSchema>;
 export type Decision = {
   id: string; agent: string; version: number; snapshot: Snapshot; at: string;
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
+  forecast?: { modelId: string; horizon: number; change: number };
   resource?: typeof RESOURCE;
   researchPurchase?: string;
   followUpOf?: string;
@@ -51,6 +54,7 @@ export type Purchase = {
 export type BudgetChange = { id: string; agent: string; cap: number; budget: number; expires: number };
 export type Settlement = { symbol: string; outcome: "yes" | "no"; at: string; source?: string; payouts: { agent: string; contracts: number; cents: number }[] };
 export type Desk = {
+  backfill?: HistoryBackfill;
   settlements?: Settlement[];
   agents: Agent[]; snapshots: Snapshot[]; decisions: Decision[]; purchases: Purchase[];
   lastTick?: number;
@@ -58,8 +62,8 @@ export type Desk = {
 };
 export function latest(agent: Agent) { return agent.versions[agent.versions.length - 1]; }
 
-export function saveVersion(agent: Agent, config: Config) {
-  const version = { ...config, number: latest(agent).number + 1, at: new Date().toISOString() };
+export function saveVersion(agent: Agent, config: Config & { modelId?: string }) {
+  const version = { modelId: latest(agent).modelId, ...config, number: latest(agent).number + 1, at: new Date().toISOString() };
   agent.versions.push(version);
   return version;
 }

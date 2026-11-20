@@ -27,3 +27,20 @@ test("quote collection requires authorization before any fetch", async t => {
   assert.equal(response.status, 403);
   assert.equal(network.mock.callCount(), 0);
 });
+
+test("Gemini backfill keeps genuine chronological points and caches duplicate fetches", async t => {
+  const { backfill } = await import("../lib/backfill");
+  const symbol = "BACKFILL-" + crypto.randomUUID();
+  const first = "2026-01-01T00:00:00.000Z";
+  const last = "2026-01-02T00:00:00.000Z";
+  const network = t.mock.method(globalThis, "fetch", async () => Response.json({ contracts: [{
+    instrumentSymbol: symbol, priceHistory: [{ timestamp: last, price: "0.55" }, { timestamp: first, price: "0.45" }, { timestamp: last, price: "0.55" }],
+  }] }));
+  try {
+    const results = await backfill(symbol, "EVENT");
+    assert.deepEqual(results.points, [{ at: first, cents: 45 }, { at: last, cents: 55 }]);
+    assert.deepEqual(await backfill(symbol, "EVENT"), results);
+    assert.equal(network.mock.callCount(), 1);
+    assert.equal((await loadBars(symbol)).bars.length, 0);
+  } finally { await rm(`.agentdesk/history-${symbol}.json`, { force: true }); }
+});

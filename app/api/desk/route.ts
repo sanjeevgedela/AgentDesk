@@ -4,7 +4,8 @@ import {
   advance, agentStats, configSchema, currentSnapshot, keepRecentQuotes, latest, newAgent, recommendation, record,
   REPLAY_SYMBOL, reserve, reserved, resolve, saveVersion, signal, type Agent, type Desk, type Snapshot, type Proposal,
 } from "../../../lib/engine";
-import { trainAgent } from "../../../lib/training";
+import { fitConfig } from "../../../lib/fitted";
+import { fitAgent, trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
 import { geminiSnapshots } from "../../../lib/gemini";
 import { processAnchors, queueAnchor } from "../../../lib/anchor-queue";
@@ -22,6 +23,8 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("advance") }),
   z.object({ kind: z.literal("demo-run") }),
   z.object({ kind: z.literal("resolve"), symbol: quoteSymbol, outcome: z.enum(["yes", "no"]) }),
+  z.object({ kind: z.literal("fit"), id: uuid, symbol: quoteSymbol, synthetic: z.boolean(), config: fitConfig }),
+  z.object({ kind: z.literal("activate-model"), id: uuid, modelId: z.string().regex(/^[0-9a-f]{20}$/) }),
   z.object({ kind: z.literal("train"), id: uuid, symbol: quoteSymbol.optional(), synthetic: z.boolean().optional() }),
   z.object({ kind: z.literal("refresh-live") }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
@@ -73,7 +76,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["reconcile", "voice", "propose", "confirm", "train", "resolve"].includes(input.kind) && !auth)
+  if (["reconcile", "voice", "propose", "confirm", "train", "fit", "activate-model", "resolve"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -206,7 +209,7 @@ export async function POST(req: NextRequest) {
       const { matched, notes, baseline, proposal: defaultProposal, source: defaultSource } = evaluateRun(original.version, original.snapshot, original.change);
       let proposal = defaultProposal;
       let source = defaultSource;
-      if (!matched && auth && process.env.OPENAI_API_KEY) {
+      if (!original.version.modelId && !matched && auth && process.env.OPENAI_API_KEY) {
         try {
           proposal = await interpret({ ...original.version, instructions: notes.join("\n") }, original.snapshot, baseline, original.change);
           source = "model_interpretation";
@@ -254,6 +257,14 @@ export async function POST(req: NextRequest) {
             throw new Error("No recorded market with that symbol.");
           resolve(desk, input.symbol, input.outcome);
           break;
+        case "fit":
+          return fitAgent(agentFor(desk, input.id), input.symbol, input.synthetic, input.config).then(model => ({ desk, model }));
+        case "activate-model": {
+          const agent = agentFor(desk, input.id);
+          if (!agent.fittedModels?.some(model => model.id === input.modelId)) throw new Error("This agent does not own that model artifact.");
+          if (latest(agent).modelId !== input.modelId) saveVersion(agent, { ...latest(agent), modelId: input.modelId });
+          break;
+        }
         case "train":
           return trainAgent(agentFor(desk, input.id), input.symbol ?? desk.selected, input.synthetic).then(training => ({ desk, training }));
         case "save":

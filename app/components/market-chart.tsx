@@ -14,7 +14,7 @@ export function smoothPath(points: Point[]) {
   }).join(" ");
 }
 
-export function MarketChart({ quotes }: { quotes: QuotePoint[] }) {
+export function MarketChart({ quotes, signals = [] }: { quotes: QuotePoint[]; signals?: { id: string; at: string; label: string }[] }) {
   const gradient = useId();
   const [inspect, setInspect] = useState<string>();
   if (!quotes.length) return null;
@@ -52,6 +52,14 @@ export function MarketChart({ quotes }: { quotes: QuotePoint[] }) {
         <path d={`${path} L ${points[points.length - 1].x} 152 L ${points[0].x} 152 Z`} fill={`url(#${gradient})`} />
         <path d={path} fill="none" stroke="#79ebbc" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
       </>}
+      {signals.map(signal => {
+        const index = quotes.findIndex(quote => quote.at === signal.at);
+        if (index < 0) return null;
+        const { x, y } = points[index];
+        return <a key={signal.id} href={"#decision-" + signal.id} aria-label={signal.label}>
+          <title>{signal.label}</title><circle cx={x} cy={Math.max(14, y - 9)} r="4" fill="#d4b6ff" stroke="#1c2738" />
+        </a>;
+      })}
       <path d={`M ${marker.x} 22 V 152`} stroke="#79ebbc" strokeOpacity=".42" strokeDasharray="3 4" />
       <circle cx={marker.x} cy={marker.y} r="4" fill="#79ebbc" stroke="#14283a" strokeWidth="1.5" />
     </svg>

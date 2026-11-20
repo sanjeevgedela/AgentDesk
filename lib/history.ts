@@ -76,5 +76,5 @@ export async function loadBars(input: string, options: { limit?: number; since?:
       ...row, observed_at: new Date(row.observed_at).toISOString(),
     })) : (await readLocal(symbol)).filter(row => !since || row.observed_at >= since).slice(-limit);
   const hash = sha256(rows);
-  return { bars: rows.map(row => ({ bid: row.bid, ask: row.ask, at: row.observed_at })), times: rows.map(row => row.observed_at), hash };
+  return { source: rows.at(-1)?.source, bars: rows.map(row => ({ bid: row.bid, ask: row.ask, at: row.observed_at })), times: rows.map(row => row.observed_at), hash };
 }
