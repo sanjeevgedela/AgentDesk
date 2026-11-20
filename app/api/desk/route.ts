@@ -5,6 +5,7 @@ import {
   REPLAY_SYMBOL, reserve, reserved, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
 } from "../../../lib/engine";
 import { geminiSnapshots } from "../../../lib/gemini";
+import { parseInstructions } from "../../../lib/policy";
 import { evaluateInstructions } from "../../../lib/instructions";
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
@@ -62,13 +63,14 @@ function completeReview(desk: Desk, purchase: Purchase, snapshot: Snapshot, prog
 
 function evaluateRun(version: ReturnType<typeof latest>, snapshot: Snapshot, change: number | null) {
   const { matched, notes } = evaluateInstructions(version.instructions, snapshot);
+  const unknown = parseInstructions(notes.join("\n")).unrecognized;
   const baseline = recommendation(version, change);
   return {
-    matched, notes, baseline,
-    proposal: matched ?? (notes.length
+    matched, notes: unknown, baseline,
+    proposal: matched ?? (unknown.length
       ? { action: "hold" as const, reason: "Some instructions require an enabled model. The run recorded a hold." }
       : baseline),
-    source: matched ? "saved_instruction" : notes.length ? "instructions_require_model" : "strategy_rule",
+    source: matched ? "saved_instruction" : unknown.length ? "instructions_require_model" : "strategy_rule",
   };
 }
 

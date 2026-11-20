@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { guard, parseInstructions } from "./policy";
 
 export const INITIAL_CASH = 100_000;
 export const PRICE = 250_000; // USDC base units
@@ -74,7 +75,7 @@ export function currentSnapshot(desk: Desk) {
 }
 export function signal(desk: Desk, snapshot: Snapshot) {
   const history = desk.snapshots.filter(s => s.mode === snapshot.mode && s.symbol === snapshot.symbol);
-  const previous = history[history.findIndex(s => s.id === snapshot.id) - 1];
+  const previous = history.findLast(s => s.id !== snapshot.id && s.at < snapshot.at);
   return previous ? (snapshot.bid + snapshot.ask - previous.bid - previous.ask) / 2 : null;
 }
 export function recommendation(config: Config, change: number | null): Proposal {
@@ -85,16 +86,20 @@ export function recommendation(config: Config, change: number | null): Proposal 
   const direction = config.strategy === "Contrarian" ? -change : change;
   return { action: direction > 0 ? "buy" : "sell", reason: `${config.strategy} signal from a ${change.toFixed(1)}¢ midpoint move.` };
 }
-export function record(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, tools: Decision["tools"], researchPurchase?: string) {
+export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string) {
   const config = latest(agent);
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
   if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number && d.researchPurchase === researchPurchase))
     throw new Error("This strategy version already ran on this snapshot.");
+  const rules = parseInstructions(config.instructions);
+  const { proposal, reasons } = guard(input, snapshot, rules);
+  const maxQty = Math.min(5, rules.maxQty ?? 5);
+  tools = [...tools, { name: "policy_guard", result: reasons.join(". ") || `Passed; max order quantity ${maxQty}.` }];
   const position = agent.positions[snapshot.symbol] ?? 0;
   const price = proposal.action === "buy" ? snapshot.ask : snapshot.bid;
   const fee = 1;
-  const quantity = proposal.action === "buy" ? Math.min(5, config.positionLimit - position, Math.floor((agent.cash - fee) / price))
-    : proposal.action === "sell" && price > fee ? Math.min(5, position) : 0;
+  const quantity = proposal.action === "buy" ? Math.min(maxQty, config.positionLimit - position, Math.floor((agent.cash - fee) / price))
+    : proposal.action === "sell" && price > fee ? Math.min(maxQty, position) : 0;
   const fill = quantity > 0 ? { price, quantity, fee } : null;
   if (fill) {
     const delta = proposal.action === "buy" ? quantity : -quantity;

@@ -219,7 +219,7 @@ function DeskView() {
               const currentDecision = desk.decisions.findLast(d => d.agent === agent.id && d.snapshot.id === snapshot?.id && d.version === config.number && !d.researchPurchase);
               const latestRun = decision?.id === runResult?.id ? decision : currentDecision;
               const needsMarket = snapshot && !config.markets.includes(snapshot.symbol);
-              const runSource = latestRun?.tools.at(-1)?.name;
+              const runSource = latestRun?.tools.findLast(tool => tool.name !== "policy_guard")?.name;
               const sourceLabel = runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
               return <article className="panel agent" key={agent.id}>
                 <div className="agent-top"><span className={`agent-icon tone-${i % 3}`}>{i % 3 === 0 ? <span className="trend-glyph" /> : ["⇄", "◇"][i % 3 - 1]}</span><span className={`pill ${config.active ? "good" : ""}`}>{config.active ? "Active" : "Paused"}</span></div>
