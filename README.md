@@ -55,7 +55,7 @@ The server-side x402 client uses Exact SVM over [x402 v2](https://github.com/coi
 
 ## ElevenLabs voice
 
-In ElevenLabs, create a private [ElevenAgents](https://elevenlabs.io/docs/eleven-agents/libraries/react) agent with authentication enabled. Register these client tools and enable response waiting for both.
+To create the agent from the command line, set `ELEVENLABS_API_KEY` and run `npx tsx --env-file=.env.local scripts/create-elevenlabs-agent.ts`, then copy the printed id into `ELEVENLABS_AGENT_ID`. It registers both tools below and enables authentication. Otherwise, in ElevenLabs, create a private [ElevenAgents](https://elevenlabs.io/docs/eleven-agents/libraries/react) agent with authentication enabled. Register these client tools and enable response waiting for both.
 
 | Tool | Required parameters | Behavior |
 | --- | --- | --- |

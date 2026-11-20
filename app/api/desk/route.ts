@@ -103,7 +103,11 @@ export async function POST(req: NextRequest) {
       if (!key || !id) throw new Error("Configure the private ElevenLabs agent and API key.");
       const voice = await fetch("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=" + encodeURIComponent(id),
         { headers: { "xi-api-key": key }, signal: AbortSignal.timeout(7000) });
-      if (!voice.ok) throw new Error("ElevenLabs rejected the session request.");
+      if (!voice.ok) throw new Error(voice.status === 401 || voice.status === 403
+        ? "ElevenLabs rejected the API key. Check ELEVENLABS_API_KEY permissions (Conversational AI access)."
+        : voice.status === 404 || voice.status === 422
+          ? "ElevenLabs could not find that agent. Check ELEVENLABS_AGENT_ID."
+          : "ElevenLabs rejected the session request (HTTP " + voice.status + ").");
       const { signed_url } = z.object({ signed_url: z.string().startsWith("wss://") }).parse(await voice.json());
       return reply({ signedUrl: signed_url });
     }

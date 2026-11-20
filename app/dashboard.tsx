@@ -103,15 +103,28 @@ function DeskView() {
     }
   }
 
+  // Client tools are registered once per session, so read the latest desk and request through refs.
+  const deskRef = useRef<Desk>(undefined);
+  const requestRef = useRef(request);
+  useEffect(() => { deskRef.current = desk; requestRef.current = request; });
   const voice = useConversation({
-    onError: () => setError("ElevenLabs could not continue the session. Check microphone and agent setup."),
+    onError: (message: string) => setError(`ElevenLabs session error: ${message || "check microphone and agent setup."}`),
+    onDisconnect: details => {
+      if (details?.reason === "error") setError(`ElevenLabs call ended: ${details.message || "connection lost."}`);
+    },
     clientTools: {
-      desk_query: async ({ question }: { question: string }) => (await request({ kind: "ask", question })).answer ?? "No records.",
+      // Tool failures are returned as text so the voice agent can explain them instead of going silent.
+      desk_query: async ({ question }: { question: string }) => {
+        try { return (await requestRef.current({ kind: "ask", question: String(question ?? "").slice(0, 600) })).answer ?? "No records."; }
+        catch (err) { return "AgentDesk could not read the records: " + (err instanceof Error ? err.message : "request failed."); }
+      },
       propose_budget: async ({ agent_name, per_purchase_usdc, total_usdc }: { agent_name: string; per_purchase_usdc: number; total_usdc: number }) => {
-        const agent = desk?.agents.find(a => latest(a).name.toLowerCase() === agent_name.trim().toLowerCase());
-        if (!agent) return "Agent name not found.";
-        await request({ kind: "propose", id: agent.id, cap: Math.round(per_purchase_usdc * 1_000_000), budget: Math.round(total_usdc * 1_000_000) });
-        return "Proposal displayed. The operator must confirm it in AgentDesk.";
+        try {
+          const agent = deskRef.current?.agents.find(a => latest(a).name.toLowerCase() === String(agent_name).trim().toLowerCase());
+          if (!agent) return "Agent name not found. Known agents: " + (deskRef.current?.agents.map(a => latest(a).name).join(", ") || "none") + ".";
+          await requestRef.current({ kind: "propose", id: agent.id, cap: Math.round(Number(per_purchase_usdc) * 1_000_000), budget: Math.round(Number(total_usdc) * 1_000_000) });
+          return "Proposal displayed. The operator must confirm it in AgentDesk.";
+        } catch (err) { return "The proposal was rejected: " + (err instanceof Error ? err.message : "invalid limits."); }
       },
     },
   });
@@ -437,9 +450,12 @@ function DeskView() {
             {auth && <button className="quiet" disabled={!!busy || (!talking && !voiceAvailable)} onClick={() => perform(talking ? "Ending call" : "Connecting ElevenLabs", async () => {
               if (talking) await voice.endSession();
               else {
+                if (!navigator.mediaDevices?.getUserMedia) throw new Error("Voice needs a secure (HTTPS or localhost) browser context with microphone support.");
+                try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); }
+                catch { throw new Error("Microphone access was denied. Allow it in the browser and try again."); }
                 const { signedUrl } = await request({ kind: "voice" });
                 if (!signedUrl) throw new Error("No signed session was returned.");
-                await voice.startSession({ signedUrl, connectionType: "websocket" });
+                voice.startSession({ signedUrl, connectionType: "websocket" });
               }
             })}>{talking ? (voice.isSpeaking ? "Speaking · End call" : "Listening · End call") : "◉ Start voice"}</button>}</div>
             {auth && !talking && !voiceAvailable && <small className="empty">ElevenLabs voice requires server configuration.</small>}
