@@ -114,6 +114,9 @@ export async function POST(req: NextRequest) {
           const result = await pay(work.snapshot, receipt => transact(owner, desk => {
             const purchase = desk.purchases.find(p => p.id === work.purchase.id)!;
             Object.assign(purchase, receipt);
+          }), ok => transact(owner, desk => {
+            const purchase = desk.purchases.find(p => p.id === work.purchase.id)!;
+            (purchase.validation ??= []).push({ name: "simulate", ok, detail: ok ? "Devnet SPL transfer simulation passed." : "Devnet refused the payment simulation.", at: new Date().toISOString() });
           }));
           await transact(owner, desk => {
             completeReview(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.evidence, false, result.programs);

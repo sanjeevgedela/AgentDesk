@@ -1,3 +1,4 @@
+import { condition } from "./instructions";
 import type { Proposal, Snapshot } from "./engine";
 
 export type Policy = { hold: boolean; maxBuyPrice?: number; minSellPrice?: number; maxSpread?: number; maxQty?: number; unrecognized: string[] };
@@ -22,7 +23,7 @@ export function parseInstructions(text: string): Policy {
       }
       continue;
     }
-    if (!/^(buy|sell|hold) (when|if) /i.test(line)) policy.unrecognized.push(line);
+    if (!condition.test(line)) policy.unrecognized.push(line);
   }
   return policy;
 }

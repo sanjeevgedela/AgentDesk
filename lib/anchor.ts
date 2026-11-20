@@ -24,12 +24,12 @@ export function memoPayload(decision: Decision, policyHash: string) {
 }
 export class AnchorSimulationError extends Error {}
 
-export async function anchorDecision(decision: Decision, policy: Policy, onSigned: (signature: string) => Promise<void> = async () => {}) {
+export async function anchorDecision(decision: Decision, policy: Policy, onSigned: (signature: string) => Promise<void> = async () => {}, client = rpc) {
   const key = z.array(z.number().int().min(0).max(255)).length(64)
     .parse(JSON.parse(process.env.SOLANA_AGENT_KEYPAIR || process.env.SOLANA_DEVNET_KEYPAIR || "null"));
   const signer = await createKeyPairSignerFromBytes(Uint8Array.from(key));
   const signal = AbortSignal.timeout(12_000);
-  const { value: blockhash } = await rpc.getLatestBlockhash({ commitment: "confirmed" }).send({ abortSignal: signal });
+  const { value: blockhash } = await client.getLatestBlockhash({ commitment: "confirmed" }).send({ abortSignal: signal });
   const message = new TextEncoder().encode(canonicalJSON(memoPayload(decision, sha256(policy))));
   if (message.length >= 400) throw new Error("Memo exceeds size limit.");
   const compiled = pipe(
@@ -40,11 +40,11 @@ export async function anchorDecision(decision: Decision, policy: Policy, onSigne
   );
   const signed = await signTransactionMessageWithSigners(compiled);
   const wire = getBase64EncodedWireTransaction(signed);
-  const simulation = await rpc.simulateTransaction(wire, { encoding: "base64", sigVerify: true, commitment: "confirmed" }).send({ abortSignal: signal });
+  const simulation = await client.simulateTransaction(wire, { encoding: "base64", sigVerify: true, commitment: "confirmed" }).send({ abortSignal: signal });
   if (simulation.value.err) throw new AnchorSimulationError("Memo transaction failed simulation.");
   const signature = getSignatureFromTransaction(signed);
   await onSigned(signature);
-  await rpc.sendTransaction(wire, { encoding: "base64", preflightCommitment: "confirmed", maxRetries: 3n }).send({ abortSignal: signal });
+  await client.sendTransaction(wire, { encoding: "base64", preflightCommitment: "confirmed", maxRetries: 3n }).send({ abortSignal: signal });
   const result = await verifyAnchor(decision, signature, sha256(policy));
   return { signature, ...result };
 }

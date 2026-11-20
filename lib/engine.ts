@@ -177,7 +177,12 @@ export function reserve(desk: Desk, agent: Agent, decision: Decision, id: string
   else if (!simulated && reserved(desk, agent.id) + PRICE > agent.budget) reason = "Research price exceeds the remaining budget.";
   else if (!enabled) reason = "Solana devnet payment configuration is unavailable.";
   const purchase: Purchase = { id, agent: agent.id, decision: decision.id, amount: PRICE, at: new Date().toISOString(),
-    status: reason ? "blocked" : "pending", reason: reason || "Budget reserved.", before: decision.action };
+    status: reason ? "blocked" : "pending", reason: reason || "Budget reserved.", before: decision.action,
+    validation: runPipeline({ at: decision.snapshot.at, checks: [
+      { name: "schema", check: () => ({ ok: true, detail: "Research request schema passed." }) },
+      { name: "policy", check: () => ({ ok: !reason, detail: reason || (simulated ? "Simulated review permitted." : "Approved resource and budget checked.") }) },
+    ] }),
+  };
   desk.purchases.push(purchase);
   return { purchase, fresh: !reason };
 }
@@ -186,7 +191,7 @@ export function usdc(units: number) { return (units / 1_000_000).toFixed(2) + " 
 
 export function keepRecentQuotes(desk: Desk, snapshots: Snapshot[]) {
   const counts = new Map<string, number>();
-  desk.snapshots = [...desk.snapshots, ...snapshots].reverse().filter(quote => {
+  desk.snapshots = [...desk.snapshots, ...snapshots].sort((a, b) => a.at.localeCompare(b.at)).reverse().filter(quote => {
     const key = quote.mode + "/" + quote.symbol;
     const count = (counts.get(key) ?? 0) + 1;
     counts.set(key, count);

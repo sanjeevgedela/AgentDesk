@@ -1,7 +1,7 @@
 import { timingSafeEqual, createHash } from "node:crypto";
 import { address, createKeyPairSignerFromBytes } from "@solana/kit";
 import { x402Client } from "@x402/core/client";
-import { decodePaymentResponseHeader } from "@x402/core/http";
+import { decodePaymentResponseHeader, decodePaymentSignatureHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { withX402, x402ResourceServer } from "@x402/next";
@@ -57,7 +57,21 @@ export class PaymentError extends Error {
   constructor(readonly submitted: boolean) { super("Research payment did not complete."); }
 }
 
-export async function pay(snapshot: Snapshot, onReceipt: (receipt: Pick<Purchase, "recipient" | "signature" | "mint">) => Promise<void>) {
+async function simulatePayment(signatureHeader: string) {
+  const wire = z.object({ transaction: z.string().min(1).max(1800) })
+    .parse(decodePaymentSignatureHeader(signatureHeader).payload).transaction;
+  const response = await fetch(RPC, {
+    method: "POST", signal: AbortSignal.timeout(7000), headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "simulateTransaction", params: [
+      wire, { encoding: "base64", sigVerify: false, commitment: "confirmed" },
+    ] }),
+  });
+  const simulated = z.object({ result: z.object({ value: z.object({ err: z.null() }) }) })
+    .safeParse(await response.json());
+  if (!response.ok || !simulated.success) throw new Error("Devnet payment simulation did not pass.");
+}
+
+export async function pay(snapshot: Snapshot, onReceipt: (receipt: Pick<Purchase, "recipient" | "signature" | "mint">) => Promise<void>, onSimulation: (ok: boolean) => Promise<void>) {
   let submitted = false;
   try {
     const recipient = address(process.env.RESEARCH_RECIPIENT!);
@@ -69,8 +83,12 @@ export async function pay(snapshot: Snapshot, onReceipt: (receipt: Pick<Purchase
       r.network === NETWORK && r.scheme === "exact" && r.asset === MINT && r.amount === String(PRICE) && r.payTo === recipient) : []);
     const localFetch: typeof fetch = async (input, init) => {
       const request = new NextRequest(input, { ...init, signal: init?.signal ?? undefined });
-      if (request.headers.has("payment-signature")) {
+      const signature = request.headers.get("payment-signature");
+      if (signature) {
         if (submitted) throw new Error("A signed payment has already been submitted.");
+        try { await simulatePayment(signature); }
+        catch { await onSimulation(false); throw new Error("Devnet payment simulation failed."); }
+        await onSimulation(true);
         submitted = true;
       }
       const response = await research(request);

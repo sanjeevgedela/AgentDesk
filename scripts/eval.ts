@@ -3,8 +3,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { confidence, datasetHash, metrics, rng, simulate, syntheticSeries, walkForward } from "../lib/backtest";
 import { INITIAL_CASH, newDesk, latest } from "../lib/engine";
-import { loadBars } from "../lib/history";
-import { sql } from "../lib/store";
+import { historySql, loadBars } from "../lib/history";
 
 const { values } = parseArgs({ options: {
   synthetic: { type: "boolean" }, symbol: { type: "string" }, seed: { type: "string" },
@@ -75,4 +74,4 @@ try {
   await writeFile(base + ".json", JSON.stringify(report, null, 2) + "\n");
   await writeFile(base + ".md", markdown);
   console.log(base + ".json");
-} finally { await sql?.end(); }
+} finally { await historySql?.end(); }

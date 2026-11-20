@@ -19,3 +19,35 @@ test("canonical anchor is compact, stable, and detects tampering", async t => {
   assert.equal((await verifyAnchor(decision, signature, policyHash)).state, "confirmed");
   assert.equal((await verifyAnchor({ ...decision, reason: "Tampered" }, signature, policyHash)).state, "mismatch");
 });
+
+test("failed simulation never submits a Solana memo and retry eligibility is bounded", async () => {
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { anchorDecision, AnchorSimulationError } = await import("../lib/anchor");
+  const { canAttemptAnchor } = await import("../lib/anchor-queue");
+  const key = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
+  const original = process.env.SOLANA_AGENT_KEYPAIR;
+  process.env.SOLANA_AGENT_KEYPAIR = JSON.stringify([...Buffer.concat([
+    Buffer.from(key.d!, "base64url"), Buffer.from(key.x!, "base64url"),
+  ])]);
+  const desk = newDesk();
+  const decision = record(desk, desk.agents[0], currentSnapshot(desk)!, { action: "hold", reason: "Memo simulation test" }, []);
+  let sent = false;
+  const rpc = {
+    getLatestBlockhash: () => ({ send: async () => ({ value: { blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 100n } }) }),
+    simulateTransaction: () => ({ send: async () => ({ value: { err: "InsufficientFunds" } }) }),
+    sendTransaction: () => { sent = true; throw new Error("must never send"); },
+  } as unknown as NonNullable<Parameters<typeof anchorDecision>[3]>;
+  try {
+    await assert.rejects(() => anchorDecision(decision, parseInstructions(""), async () => {
+      assert.fail("A failed simulation must not yield a signature");
+    }, rpc), AnchorSimulationError);
+    assert.equal(sent, false);
+    const anchor = { status: "pending" as const, attempts: 4, updated: 1000, policyHash: sha256({}) };
+    assert.equal(canAttemptAnchor(anchor, 60_999), false);
+    assert.equal(canAttemptAnchor(anchor, 61_000), true);
+    assert.equal(canAttemptAnchor({ ...anchor, attempts: 5 }, 120_000), false);
+  } finally {
+    if (original === undefined) delete process.env.SOLANA_AGENT_KEYPAIR;
+    else process.env.SOLANA_AGENT_KEYPAIR = original;
+  }
+});

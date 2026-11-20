@@ -8,7 +8,7 @@ export const researchLimits = { minimumPersistence: .6, maxSpreadPercentile: 50,
 export const evidenceSchema = z.object({
   spread: z.number().int().nonnegative(), observations: z.number().int().min(1).max(200),
   spreadPercentile: z.number().min(0).max(100), volatility: z.number().nonnegative(),
-  staleness: z.number().nonnegative().nullable(), persistence: z.number().min(0).max(1), text: z.string(),
+  staleness: z.number().nonnegative().nullable(), persistence: z.number().min(0).max(1), direction: z.union([z.literal(-1), z.literal(0), z.literal(1)]), text: z.string(),
 });
 export type Evidence = z.infer<typeof evidenceSchema>;
 
@@ -24,12 +24,12 @@ export function evidenceFor(snapshot: Snapshot, history: Bar[]) {
   const moves = recent.slice(1).map((bar, i) => (bar.ask + bar.bid - recent[i].ask - recent[i].bid) / 2);
   const volatility = moves.length ? Math.sqrt(moves.reduce((sum, move) => sum + move ** 2, 0) / moves.length) : 0;
   const signs = moves.slice(-10);
-  const direction = Math.sign(signs.at(-1) ?? 0);
+  const direction = Math.sign(signs.at(-1) ?? 0) as -1 | 0 | 1;
   const persistence = direction ? signs.filter(move => Math.sign(move) === direction).length / signs.length : 0;
   const distinct = others.findLast(bar => bar.bid !== snapshot.bid || bar.ask !== snapshot.ask);
   const staleness = distinct ? (Date.parse(snapshot.at) - Date.parse(distinct.at)) / 1000 : null;
   return {
-    spread, observations: bars.length, spreadPercentile, volatility, staleness, persistence,
+    spread, observations: bars.length, spreadPercentile, volatility, staleness, persistence, direction,
     text: `${snapshot.mode === "replay" ? "SYNTHETIC. " : ""}${bars.length} observations through ${snapshot.at}. RMS midpoint move ${volatility.toFixed(2)}¢, spread percentile ${spreadPercentile.toFixed(1)}, same-direction moves ${(persistence * 100).toFixed(0)}%, prior distinct quote ${staleness ?? "unavailable"} seconds ago.`,
   };
 }
@@ -64,13 +64,11 @@ export function completeReview(desk: Desk, purchase: Purchase, snapshot: Snapsho
   purchase.evidence = evidence.text;
   const passes = evidence.observations > 1 && evidence.persistence >= researchLimits.minimumPersistence &&
     evidence.spreadPercentile <= researchLimits.maxSpreadPercentile && evidence.volatility <= researchLimits.maxVolatility;
-  const previous = desk.snapshots.findLast(q => q.symbol === snapshot.symbol && q.mode === snapshot.mode && q.at < snapshot.at);
-  const direction = previous ? snapshot.bid + snapshot.ask - previous.bid - previous.ask : 0;
-  purchase.after = passes && direction ? direction > 0 ? "buy" : "sell" : "hold";
+  purchase.after = passes && evidence.direction ? evidence.direction > 0 ? "buy" : "sell" : "hold";
   purchase.reason = simulated ? "Simulated review complete." : "Devnet USDC transfer confirmed.";
   purchase.validation = [
-    { name: "schema", ok: true, detail: "Historical evidence schema passed.", at: purchase.at },
-    { name: "execute", ok: true, detail: simulated ? "Simulated purchase." : "x402 settlement recorded.", at: purchase.at },
+    ...(purchase.validation ?? []).filter(stage => stage.name !== "execute" && stage.name !== "reconcile"),
+    { name: "execute", ok: true, detail: simulated ? "Simulated purchase." : "x402 settlement recorded.", at: snapshot.at },
     { name: "reconcile", ok: true, detail: simulated ? "Demo ledger updated." : "Verified vendor USDC balance delta on devnet.", at: purchase.at },
   ];
   if (!simulated) {

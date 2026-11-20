@@ -1,6 +1,6 @@
 import type { Proposal, Snapshot } from "./engine";
 
-const condition = /^(buy|sell|hold) (?:when|if) (?:the )?(yes(?: price)?|midpoint|ask|bid|spread) (?:is |falls |rises )?(below|above|at most|at least|exceeds) (\d{1,2}(?:\.\d+)?)\s*(?:¢|cents?)?$/i;
+export const condition = /^(buy|sell|hold) (?:when|if) (?:the )?(yes(?: price)?|midpoint|ask|bid|spread) (?:is |falls |rises )?(below|above|at most|at least|exceeds) (\d{1,2}(?:\.\d+)?)\s*(?:¢|cents?)?$/i;
 
 export function evaluateInstructions(text: string, quote: Snapshot) {
   const notes: string[] = [];

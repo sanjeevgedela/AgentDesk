@@ -72,3 +72,42 @@ test("paper resolution pays YES at 100 cents and cannot pay twice", async () => 
   assert.equal(agent.positions[quote.symbol], 0);
   assert.throws(() => resolve(desk, quote.symbol, "no"), /different recorded outcome/);
 });
+
+test("scheduled agents run a quote once and training API rejects anonymous callers", async () => {
+  const { runScheduledDesk } = await import("../lib/autopilot");
+  const { NextRequest } = await import("next/server");
+  const { POST } = await import("../app/api/desk/route");
+  const desk = newDesk();
+  const quote = { ...currentSnapshot(desk)!, at: new Date().toISOString(), mode: "live" as const, symbol: "TEST-AUTOPILOT" };
+  const agent = desk.agents[0];
+  Object.assign(latest(agent), { auto: true, markets: [quote.symbol] });
+  assert.equal(await runScheduledDesk(desk, [quote]), 1);
+  assert.equal(await runScheduledDesk(desk, [{ ...quote, id: "different-observer-id" }]), 0);
+  assert.equal(desk.decisions.length, 1);
+  const response = await POST(new NextRequest("http://localhost/api/desk", {
+    method: "POST", body: JSON.stringify({ kind: "train", id: agent.id, synthetic: true }),
+    headers: { "content-type": "application/json" },
+  }));
+  assert.equal(response.status, 403);
+});
+
+test("an eligible training result promotes exactly once and preserves instructions", async () => {
+  const { appendQuotes } = await import("../lib/history");
+  const { trainAgent } = await import("../lib/training");
+  const { rm } = await import("node:fs/promises");
+  const symbol = "TEST-TRAINED-PROMOTION";
+  const quotes = syntheticSeries(10, 600).map((bar, index) => ({
+    ...bar, id: String(index), symbol, title: "Training test", source: "SYNTHETIC test fixture", mode: "live" as const,
+  }));
+  const agent = newDesk().agents[0];
+  Object.assign(latest(agent), { threshold: 8, positionLimit: 10, markets: [symbol], instructions: "max contracts: 5" });
+  try {
+    await appendQuotes(quotes);
+    const first = await trainAgent(agent, symbol);
+    assert.equal(first?.report.promoted, true);
+    assert.equal(first?.appliedVersion, 2);
+    assert.equal(latest(agent).instructions, "max contracts: 5");
+    assert.deepEqual(first, await trainAgent(agent, symbol));
+    assert.equal(agent.versions.length, 2);
+  } finally { await rm(`.agentdesk/quotes-${symbol}.jsonl`, { force: true }); }
+});
