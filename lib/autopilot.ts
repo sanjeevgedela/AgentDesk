@@ -21,14 +21,14 @@ export function followedQuotes(desk: Desk, scheduled = false) {
   });
 }
 
-function liveDecision(desk: Desk, agent: Desk["agents"][number], quote: Snapshot, scheduled = false) {
+function liveDecision(desk: Desk, agent: Desk["agents"][number], quote: Snapshot, scheduled = false, replay = false) {
   const config = latest(agent);
-  if (quote.mode !== "live" || !config.active || !config.markets.includes(quote.symbol)) return;
+  if (quote.mode !== (replay ? "replay" : "live") || !config.active || !config.markets.includes(quote.symbol)) return;
   if (desk.settlements?.some(item => item.symbol === quote.symbol)) return;
   const newest = desk.snapshots.findLast(item => item.mode === "live" && item.symbol === quote.symbol);
   if (newest && newest.at > quote.at) return;
   if (hasRun(desk, agent, quote)) return;
-  const previous = desk.decisions.findLast(item => item.agent === agent.id && item.snapshot.mode === "live" &&
+  const previous = desk.decisions.findLast(item => item.agent === agent.id && item.snapshot.mode === quote.mode &&
     item.snapshot.symbol === quote.symbol && item.version === config.number && !item.researchPurchase);
   const stopOnly = scheduled ? config.auto !== true : config.auto === false;
   if (stopOnly && !positionMark(desk, agent, quote)?.triggered) return;
@@ -44,6 +44,10 @@ function liveDecision(desk: Desk, agent: Desk["agents"][number], quote: Snapshot
       decision.validation?.find(stage => !stage.ok)?.name !== previous.validation?.find(stage => !stage.ok)?.name ||
       stop !== previousStop || (stop && !!decision.fill && !repeatedStop);
   });
+}
+
+export function runReplayDesk(desk: Desk, quote: Snapshot) {
+  for (const agent of desk.agents) liveDecision(desk, agent, quote, false, true);
 }
 
 export function runLiveDesk(desk: Desk, quotes: Snapshot[]) {

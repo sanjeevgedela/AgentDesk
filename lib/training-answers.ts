@@ -1,15 +1,28 @@
+import { pythonML } from "./python-ml";
 import { dollars, latest, type Agent } from "./engine";
 
-export function answerTraining(agent: Agent, modelId: string | undefined, question: string) {
+export async function answerTraining(agent: Agent, modelId: string | undefined, question: string) {
   const model = agent.fittedModels?.find(item => item.id === modelId);
   const name = latest(agent).name;
   if (!model) return `No saved fitted model is selected for ${name}. Fit a model in Training to inspect its dataset and decisions.`;
   const { artifact, backtest, bars } = model;
   const query = question.toLowerCase();
   const parts = [`${name} · model ${model.id} · ${model.synthetic ? "SYNTHETIC" : "recorded quotes"} for ${model.symbol}.`];
-  const data = /data|quote|split|train|features|sample|time/.test(query);
-  const metrics = /perform|score|baseline|accur|error|held|profit|loss|result|better|test/.test(query);
-  const strategy = /strategy|buy|sell|trade|fill|why|research|cost|fee|stop/.test(query);
+  let data = /data|quote|split|train|features|sample|time/.test(query);
+  let metrics = /perform|score|baseline|accur|error|held|profit|loss|result|better|test/.test(query);
+  let strategy = /strategy|buy|sell|trade|fill|why|research|cost|fee|stop/.test(query);
+  const topics = [
+    "historical data quotes train training sample observations dates split features dataset",
+    "performance results loss profit better best compare accuracy validation held out test score baseline working",
+    "strategy settings buy sell trade transaction fill cost fee stop trading behavior",
+  ];
+  if (!(data || metrics || strategy)) {
+    const topic = await pythonML<number>({ question, feedback: topics }).catch(() => -1);
+    data = topic === 0;
+    metrics = topic === 1;
+    strategy = topic === 2;
+  }
+
 
   if (data || (!metrics && !strategy)) parts.push(
     `The dataset has ${bars.length} observations from ${bars[0].at} through ${bars.at(-1)?.at}. SHA-256 ${model.datasetHash}.`,

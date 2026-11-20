@@ -21,7 +21,7 @@ export function forecastProposal(config: Pick<Config, "strategy" | "threshold">,
   const actionable = Math.abs(move) >= config.threshold;
   return {
     action: !actionable || config.strategy === "Evidence-driven" ? "hold" : move > 0 ? "buy" : "sell",
-    reason: `Ridge forecast ${change.toFixed(2)}¢ over ${horizon} observations.`,
+    reason: `Model forecast ${change.toFixed(2)}¢ over ${horizon} observations.`,
     resource: actionable && config.strategy === "Evidence-driven" ? RESOURCE : undefined,
   };
 }
@@ -30,14 +30,20 @@ export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal
 export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly: boolean, accept: (decision: Decision) => boolean): Decision | undefined;
 export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly = false, accept?: (decision: Decision) => boolean) {
   const version = latest(agent);
-  const model = agent.fittedModels?.find(item => item.id === version.modelId);
+  const models = agent.fittedModels ?? [];
+  const model = models.find(item => item.id === version.modelId) ?? models.findLast(item =>
+    item.artifact.method === "sgd" && item.symbol === snapshot.symbol && item.synthetic === (snapshot.mode === "replay") &&
+    item.bars.at(-1)!.at < snapshot.at && item.artifact.validation.mae < item.artifact.validation.zeroMoveMae &&
+    item.execution?.strategy === version.strategy && item.execution?.instructions === version.instructions &&
+    item.execution?.threshold === version.threshold && item.execution?.positionLimit === version.positionLimit &&
+    item.execution?.stopLossPct === version.stopLossPct);
   const previous = desk.snapshots.findLast(quote => quote.mode === snapshot.mode && quote.symbol === snapshot.symbol && quote.at < snapshot.at);
   const usable = model && previous && model.synthetic === (snapshot.mode === "replay") && model.symbol === snapshot.symbol &&
     model.bars.at(-1)!.at < snapshot.at;
   const forecast = usable && predict(model.artifact, snapshot, previous);
   const inference = typeof forecast === "number" && model
     ? { modelId: model.id, horizon: model.artifact.config.horizon, change: forecast } : undefined;
-  if (!stopOnly && version.modelId && source !== "saved_instruction") {
+  if (!stopOnly && (version.modelId || model) && source !== "saved_instruction") {
     source = inference ? "fitted_model" : "model_unavailable";
     if (inference) {
       proposal = forecastProposal(version, inference.change, inference.horizon);

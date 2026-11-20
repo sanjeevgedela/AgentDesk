@@ -1,3 +1,4 @@
+import { fitStochastic } from "./stochastic";
 import { fitForecast, predict, type FitConfig, type FittedModel } from "./fitted";
 import { sha256 } from "./canonical";
 import { datasetHash, simulate, syntheticSeries, train, type TrainReport } from "./backtest";
@@ -34,7 +35,7 @@ export async function trainAgent(agent: Agent, symbol: string, synthetic = false
   return record;
 }
 
-export async function fitAgent(agent: Agent, symbol: string, synthetic: boolean, config: FitConfig) {
+export async function fitAgent(agent: Agent, symbol: string, synthetic: boolean, config: FitConfig, stochastic = false) {
   const version = latest(agent);
   if (!version.markets.includes(symbol)) throw new Error("Allow this market before fitting its model.");
   const available = synthetic ? syntheticSeries(17, 600) : (await loadBars(symbol)).bars;
@@ -42,13 +43,13 @@ export async function fitAgent(agent: Agent, symbol: string, synthetic: boolean,
   const datasetHash = sha256({ symbol, synthetic, bars });
   const execution = { strategy: version.strategy, threshold: version.threshold, positionLimit: version.positionLimit,
     stopLossPct: version.stopLossPct, instructions: version.instructions };
-  const id = sha256({ datasetHash, config, execution, replayVersion: 1 }).slice(0, 20);
+  const id = sha256({ datasetHash, config, execution, replayVersion: 1, ...(stochastic ? { method: "sgd" } : {}) }).slice(0, 20);
   const existing = agent.fittedModels?.find(model => model.id === id);
   if (existing) return existing;
-  if ((agent.fittedModels?.length ?? 0) >= 20) throw new Error("This agent has reached 20 saved model artifacts.");
+  if (!stochastic && (agent.fittedModels?.length ?? 0) >= 20) throw new Error("This agent has reached 20 saved model artifacts.");
   const model: FittedModel = {
     id, createdAt: new Date().toISOString(), symbol, synthetic, datasetHash, bars, execution,
-    artifact: fitForecast(bars, config, Number.parseInt(datasetHash.slice(0, 8), 16)),
+    artifact: await (stochastic ? fitStochastic : fitForecast)(bars, config, Number.parseInt(datasetHash.slice(0, 8), 16)),
   };
   const heldOut = bars.filter(bar => bar.at >= model.artifact.split.testFrom);
   const test = simulate(heldOut, version, 1, i => {

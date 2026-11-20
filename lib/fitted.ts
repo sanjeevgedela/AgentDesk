@@ -17,7 +17,7 @@ function features(bar: Bar, prev: Bar, keys: FitConfig["features"]) {
   return keys.map(key => values[key]);
 }
 
-export function fitForecast(bars: Bar[], config: FitConfig, seed: number) {
+export function prepareForecast(bars: Bar[], config: FitConfig) {
   if (bars.length < 120) throw new Error(`Model fitting needs 120 chronological quotes in the chosen range. Found ${bars.length}.`);
   if (bars.some((bar, index) => index > 0 && bar.at <= bars[index - 1].at)) throw new Error("Model fitting requires unique chronological quotes.");
   const valStart = Math.floor(bars.length * .6);
@@ -31,19 +31,13 @@ export function fitForecast(bars: Bar[], config: FitConfig, seed: number) {
   const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
   const mean = config.features.map((_, i) => average(train.map(row => row.x[i])));
   const scale = mean.map((center, i) => Math.sqrt(average(train.map(row => (row.x[i] - center) ** 2))) || 1);
-  const intercept = average(train.map(row => row.y));
-  const normalized = train.map(row => ({ z: row.x.map((value, i) => (value - mean[i]) / scale[i]), y: row.y }));
-  const coefficients = mean.map(() => 0);
-  // Ridge least squares by deterministic coordinate descent on standardized training rows.
-  for (let epoch = 0; epoch < 150; epoch++) {
-    for (let step = 0; step < coefficients.length; step++) {
-      const i = (step + seed % coefficients.length) % coefficients.length;
-      const numer = normalized.reduce((sum, row) => sum + row.z[i] * (row.y - intercept -
-        coefficients.reduce((acc, coefficient, j) => acc + (i === j ? 0 : coefficient * row.z[j]), 0)), 0);
-      const denom = normalized.reduce((sum, row) => sum + row.z[i] ** 2, 0) + config.ridge * train.length;
-      coefficients[i] = numer / denom;
-    }
-  }
+  return { train, validation, test, mean, scale, valStart, testStart };
+}
+
+export function forecastArtifact(bars: Bar[], config: FitConfig, seed: number, split: ReturnType<typeof prepareForecast>,
+  coefficients: number[], intercept: number, loss?: number[]) {
+  const { train, validation, test, mean, scale, valStart, testStart } = split;
+  const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
   const score = (rows: typeof train) => {
     const predictions = rows.map(row => intercept + row.x.reduce((sum, value, i) => sum + (value - mean[i]) / scale[i] * coefficients[i], 0));
     return {
@@ -53,10 +47,28 @@ export function fitForecast(bars: Bar[], config: FitConfig, seed: number) {
       directionAccuracy: average(rows.map((row, index) => Number(Math.sign(row.y) === Math.sign(predictions[index])))),
     };
   };
-  return { method: "ridge" as const, target: "future_midpoint_change_cents" as const, config, seed, mean, scale, coefficients, intercept,
+  return { method: loss ? "sgd" as const : "ridge" as const, loss, target: "future_midpoint_change_cents" as const, config, seed, mean, scale, coefficients, intercept,
     split: { validationFrom: bars[valStart].at, testFrom: bars[testStart].at, trainingLabelThrough: bars[valStart - 1].at,
       validationLabelThrough: bars[testStart - 1].at, trainSamples: train.length },
     validation: score(validation), test: score(test) };
+}
+
+export function fitForecast(bars: Bar[], config: FitConfig, seed: number) {
+  const split = prepareForecast(bars, config);
+  const { train, mean, scale } = split;
+  const intercept = train.reduce((sum, row) => sum + row.y, 0) / train.length;
+  const normalized = train.map(row => ({ z: row.x.map((value, i) => (value - mean[i]) / scale[i]), y: row.y }));
+  const coefficients = mean.map(() => 0);
+  for (let epoch = 0; epoch < 150; epoch++) {
+    for (let step = 0; step < coefficients.length; step++) {
+      const i = (step + seed % coefficients.length) % coefficients.length;
+      const numer = normalized.reduce((sum, row) => sum + row.z[i] * (row.y - intercept -
+        coefficients.reduce((acc, coefficient, j) => acc + (i === j ? 0 : coefficient * row.z[j]), 0)), 0);
+      const denom = normalized.reduce((sum, row) => sum + row.z[i] ** 2, 0) + config.ridge * train.length;
+      coefficients[i] = numer / denom;
+    }
+  }
+  return forecastArtifact(bars, config, seed, split, coefficients, intercept);
 }
 
 export type Forecast = ReturnType<typeof fitForecast>;

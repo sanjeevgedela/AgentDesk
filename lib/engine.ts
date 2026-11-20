@@ -73,7 +73,9 @@ export function saveVersion(agent: Agent, config: Config & { modelId?: string })
 export const REPLAY_SYMBOL = "REPLAY-FED";
 const replayQuotes = [[36, 39], [42, 45], [48, 56], [53, 57], [45, 49], [38, 42]];
 export function replaySnapshot(index: number): Snapshot {
-  const [bid, ask] = replayQuotes[index];
+  const phase = index * 2.399963;
+  const mid = Math.round(47 + 12 * Math.sin(index / 29) + 6 * Math.sin(index / 7) + 3 * Math.sin(phase));
+  const [bid, ask] = replayQuotes[index] ?? [mid - 2, mid + 2];
   return { id: "replay-" + index, symbol: REPLAY_SYMBOL, title: "Will the Fed cut rates at its next meeting?",
     bid, ask, mode: "replay", source: "AgentDesk synthetic replay",
     at: new Date(Date.UTC(2026, 0, 15, 14, index * 5)).toISOString() };
@@ -92,8 +94,9 @@ export function newDesk(): Desk {
   };
 }
 export function advance(desk: Desk) {
-  if (desk.replay + 1 >= replayQuotes.length) throw new Error("Replay is at its final snapshot.");
   desk.snapshots.push(replaySnapshot(++desk.replay));
+  const oldest = desk.replay - 600;
+  desk.snapshots = desk.snapshots.filter(quote => quote.mode !== "replay" || Number(quote.id.slice(7)) >= oldest);
 }
 export function currentSnapshot(desk: Desk) {
   return desk.snapshots.findLast(s => s.mode === desk.mode && s.symbol === desk.selected);

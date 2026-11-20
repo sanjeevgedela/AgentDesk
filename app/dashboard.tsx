@@ -7,7 +7,7 @@ import { FittedTraining } from "./components/fitted-training";
 import { PagedFeed } from "./components/paged-feed";
 import { MarketChart, type QuotePoint } from "./components/market-chart";
 import { PolicyPreview, Sparkline, TrainingPanel } from "./components/training";
-import { agentStats, currentSnapshot, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
+import { agentStats, currentSnapshot, replaySnapshot, INITIAL_CASH, dollars, positionMark, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
 
 type Payload = { runs?: number; refreshed?: boolean; proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
@@ -36,6 +36,8 @@ function DeskView() {
   const [error, setError] = useState("");
   const [instructions, setInstructions] = useState("");
   const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; quotes: QuotePoint[]; backfill?: z.infer<typeof historySchema>["backfill"] }>();
+  const [trainingStatus, setTrainingStatus] = useState("");
+  const [playing, setPlaying] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
@@ -142,7 +144,9 @@ function DeskView() {
     .sort((a, b) => a.title.localeCompare(b.title) || a.symbol.localeCompare(b.symbol)) : [];
   const matchingHistory = desk?.mode === "live" && history?.symbol === desk.selected ? history : undefined;
   const series = desk?.snapshots.filter(s => s.symbol === desk.selected && s.mode === desk.mode) ?? [];
-  const chartQuotes = [...new Map([...(matchingHistory?.quotes ?? []), ...series].map(item => [item.at, item])).values()]
+  const openingHistory = desk?.mode === "replay" && desk.replay <= 600 ? Array.from({ length: 120 }, (_, i) => replaySnapshot(i - 120)) : [];
+  const historicalMarks = matchingHistory?.backfill?.points.map(point => ({ at: point.at, bid: point.cents, ask: point.cents })) ?? [];
+  const chartQuotes = [...new Map([...openingHistory, ...historicalMarks, ...(matchingHistory?.quotes ?? []), ...series].map(item => [item.at, item])).values()]
     .sort((a, b) => a.at.localeCompare(b.at));
   const selectedTrainingAgent = desk?.agents.find(agent => agent.id === trainingAgent) ?? desk?.agents[0];
   const trainingCount = matchingHistory?.count ?? 0;
@@ -186,6 +190,48 @@ function DeskView() {
       document.removeEventListener("visibilitychange", visible);
     };
   }, [autoRefresh, live, refreshQuotes]);
+  const replay = desk?.mode === "replay";
+  useEffect(() => {
+    if (!playing || !replay) return;
+    let stopped = false;
+    let timer: number;
+    const step = async () => {
+      const started = performance.now();
+      try {
+        if (document.visibilityState === "visible") await request({ kind: "advance" });
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Replay update failed.");
+        setPlaying(false);
+        return;
+      }
+      if (!stopped) timer = window.setTimeout(step, Math.max(0, 1000 - (performance.now() - started)));
+    };
+    timer = window.setTimeout(step, 1000);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [playing, replay, request]);
+  const trainingMarket = snapshot?.symbol;
+  useEffect(() => {
+    if (!trainingMarket) return;
+    let stopped = false;
+    let timer: number;
+    const train = async () => {
+      if (document.visibilityState === "visible") {
+        setTrainingStatus("Checking the dataset and fitting eligible forecasts…");
+        try {
+          const result = await request({ kind: "auto-train" });
+          if (!stopped) {
+            setTrainingStatus(result.answer ?? "");
+            if (result.answer?.startsWith("Saved")) await request();
+          }
+        } catch (error) {
+          if (!stopped) setTrainingStatus(error instanceof Error ? error.message : "Automatic training unavailable.");
+        }
+      }
+      if (!stopped) timer = window.setTimeout(train, 30_000);
+    };
+    timer = window.setTimeout(train, 300);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [trainingMarket, request]);
   const valuation = (a: Agent) => a.cash + Object.entries(a.positions).reduce((sum, [symbol, qty]) => {
     const mark = desk?.snapshots.findLast(s => s.symbol === symbol);
     return sum + (mark ? qty * (mark.bid + mark.ask) / 2 : 0);
@@ -296,7 +342,7 @@ function DeskView() {
           </section>
           <section className="panel market">
             <div className="section-head"><div><span className="eyebrow">{desk.mode === "replay" ? "SYNTHETIC REPLAY" : "GEMINI PREDICTION MARKETS"}</span><h2>{snapshot?.title || "Market snapshot"}</h2></div>
-              {desk.mode === "replay" ? <button className="quiet" disabled={!!busy || desk.replay >= 5} onClick={() => act("Advancing replay", { kind: "advance" })}>{desk.replay >= 5 ? "Replay complete" : "Next snapshot →"}</button>
+              {desk.mode === "replay" ? <button className="quiet" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>{playing ? "Pause replay" : "Play replay · 1s"}</button>
                 : <button className="quiet" disabled={quoteRefreshing} onClick={() => void refreshQuotes(true)}>{quoteRefreshing ? "Refreshing quotes…" : "Refresh quotes"}</button>}</div>
             {desk.mode === "live" && <label className="select-market">Market<select disabled={!!busy} value={desk.selected} onChange={e => act("Selecting market", { kind: "select", symbol: e.target.value })}>{markets.map(s => <option key={s.symbol} value={s.symbol}>{s.title}</option>)}</select></label>}
             {snapshot && <><div className="quote"><strong>{((snapshot.bid + snapshot.ask) / 2).toFixed(1)}¢</strong><span>YES midpoint</span><span>Bid {snapshot.bid}¢</span><span>Ask {snapshot.ask}¢</span></div>
@@ -390,6 +436,7 @@ function DeskView() {
             {!auth && <p className="empty">{operatorAccess ? "Open Operator access to run training." : "Training runs are available in the operator workspace. Enable operator access in the server settings."}</p>}
             {auth && !allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
             {desk.mode === "live" && trainingCount < 120 && <p className="empty">Training on live history needs 120 observations for the same market.</p>}
+            <p role="status">{trainingStatus}</p>
             {selectedTrainingAgent && <FittedTraining key={"fit-" + selectedTrainingAgent.id} models={selectedTrainingAgent.fittedModels ?? []}
               active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator={auth}
               fit={async (config, synthetic) => {

@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "eval": "tsx scripts/eval.ts",
-    "test:e2e": "node scripts/smoke-fitted.mjs"
+    "test:e2e": "node scripts/smoke-fitted.mjs",
+    "collect": "node --env-file-if-exists=.env.local scripts/collect.mjs",
+    "test:ml": "tsx scripts/check-ml.ts"
   },
   "keywords": [],
   "author": "",

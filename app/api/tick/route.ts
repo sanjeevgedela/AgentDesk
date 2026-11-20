@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { trainWorkspace } from "../../../lib/auto-training";
 import { processAnchors } from "../../../lib/anchor-queue";
 import { followedQuotes, runAutopilot } from "../../../lib/autopilot";
 import { NextRequest, NextResponse } from "next/server";
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
       return matches.length;
     }) : null;
     const runs = await runAutopilot(quotes);
-    after(async () => { await processAnchors(); });
+    after(async () => { await Promise.allSettled([processAnchors(), trainWorkspace("operator", true)]); });
     return NextResponse.json({ fetched: quotes.length, inserted, runs, settled });
   } catch {
     return NextResponse.json({ error: "Quote collection unavailable." }, { status: 502 });

@@ -59,10 +59,10 @@ test("fitted replay records real strategy decisions and a matched baseline", asy
     assert.equal(replay.rows.at(-1)!.equity, replay.equity.at(-1));
     assert.equal(replay.rows[0].at, model.artifact.split.testFrom);
     assert.equal(replay.baseline?.equity.length, replay.rows.length);
-    const reply = answerTraining(agent, model.id, "What was the dataset and how did the baseline perform?");
+    const reply = await answerTraining(agent, model.id, "What was the dataset and how did the baseline perform?");
     assert.ok(reply.includes(model.datasetHash));
     assert.match(reply, /SYNTHETIC/);
     assert.match(reply, /same strategy without the forecast/);
   }
-  assert.match(answerTraining(newDesk().agents[0], undefined, "How did it do?"), /No saved fitted model/);
+  assert.match(await answerTraining(newDesk().agents[0], undefined, "How did it do?"), /No saved fitted model/);
 });

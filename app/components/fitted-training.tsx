@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { featureNames, fitConfig, type FitConfig, type FittedModel } from "../../lib/fitted";
 import { BacktestInspector, TrainingChat } from "./backtest-inspector";
 import { Sparkline } from "./training";
+import { RecordedPlayback } from "./recorded-playback";
 
 export function FittedTraining({ models, active, busy, canFit, operator, fit, activate, ask }: {
   models: FittedModel[]; active?: string; busy: boolean; canFit: boolean; operator: boolean;
@@ -47,7 +48,7 @@ export function FittedTraining({ models, active, busy, canFit, operator, fit, ac
     </form>}
     {error && <p role="alert">{error}</p>}
     {status && <p role="status">{status}</p>}
-    <p>Active predictive model: {active ?? "None · strategy rules only"}</p>
+    <p>Active predictive model: {active ?? "Automatic forecasts must beat the validation baseline"}</p>
     {chosen && <>
       <label>Saved models<select aria-label="Saved models" value={chosen.id} onChange={event => setSelection(event.target.value)}>
         {models.map(model => <option key={model.id} value={model.id}>{model.id} · {model.symbol} · {model.synthetic ? "SYNTHETIC" : "recorded"} · Validation MAE {model.artifact.validation.mae.toFixed(2)}¢</option>)}
@@ -57,11 +58,17 @@ export function FittedTraining({ models, active, busy, canFit, operator, fit, ac
       {chosen.execution && <p>{chosen.execution.strategy} · {chosen.execution.threshold}¢ signal threshold · {chosen.execution.positionLimit}-contract position limit{chosen.execution.stopLossPct ? ` · ${chosen.execution.stopLossPct}% stop-loss` : ""}</p>}
       <p>Target: future midpoint change over {chosen.artifact.config.horizon} observations.</p>
       <p>Validation MAE {chosen.artifact.validation.mae.toFixed(2)}¢ · Final test MAE {chosen.artifact.test.mae.toFixed(2)}¢ · Zero-move test baseline {chosen.artifact.test.zeroMoveMae.toFixed(2)}¢</p>
+      {chosen.artifact.loss && <div>
+        <p>Scikit-learn stochastic gradient descent · {chosen.artifact.loss.length} epochs · mean squared training loss {chosen.artifact.loss[0].toFixed(2)} → {chosen.artifact.loss.at(-1)!.toFixed(2)}</p>
+        <Sparkline values={chosen.artifact.loss} label="Mean squared loss by training epoch" />
+        <small>{chosen.artifact.validation.mae < chosen.artifact.validation.zeroMoveMae ? "Passed the zero-move validation baseline." : "Below the promotion threshold. Strategy rules remain available."}</small>
+      </div>}
       <p>Validation starts {chosen.artifact.split.validationFrom} · Test starts {chosen.artifact.split.testFrom}</p>
       {chosen.backtest && <><p>Held-out paper equity · {chosen.backtest.trades} fills · {chosen.backtest.pnl.toFixed(2)}¢ P&L · {chosen.backtest.fees}¢ fees</p>
         {chosen.backtest.baseline && <p>Strategy rules without a fitted forecast · {chosen.backtest.baseline.pnl.toFixed(2)}¢ P&amp;L · {chosen.backtest.baseline.trades} fills · dashed line</p>}
         <Sparkline values={chosen.backtest.equity} baseline={chosen.backtest.baseline?.equity} label="Held-out equity" />
         <p>Drawdown (¢)</p><Sparkline values={chosen.backtest.drawdown} label="Held-out drawdown" /></>}
+      <RecordedPlayback key={chosen.id} quotes={chosen.bars} start={Math.max(1, chosen.bars.findIndex(bar => bar.at >= chosen.artifact.split.testFrom))} />
       <details><summary>Inspect saved quotes and coefficients</summary>
         <a href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(chosen, null, 2))}`} download={`agentdesk-model-${chosen.id}.json`}>Download fitted artifact and dataset</a>
         <BacktestInspector key={chosen.id} model={chosen} />

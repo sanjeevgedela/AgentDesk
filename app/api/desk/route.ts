@@ -4,7 +4,7 @@ import {
   advance, agentStats, configSchema, currentSnapshot, hasRun, keepRecentQuotes, latest, newAgent, recommendation, record,
   REPLAY_SYMBOL, reserve, reserved, resolve, saveVersion, sameObservation, signal, type Agent, type Desk, type Snapshot, type Proposal,
 } from "../../../lib/engine";
-import { followedQuotes, runLiveDesk } from "../../../lib/autopilot";
+import { followedQuotes, runLiveDesk, runReplayDesk } from "../../../lib/autopilot";
 import { fitConfig } from "../../../lib/fitted";
 import { fitAgent, trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
@@ -16,6 +16,7 @@ import { applyReview, completeReview, researchFor } from "../../../lib/research"
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
 import { operator, transact } from "../../../lib/store";
+import { trainWorkspace } from "../../../lib/auto-training";
 import { answerTraining } from "../../../lib/training-answers";
 import { answer } from "../../../lib/supervisor";
 
@@ -24,6 +25,7 @@ const amount = z.number().int().min(0).max(10_000_000);
 const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("advance") }),
   z.object({ kind: z.literal("demo-run") }),
+  z.object({ kind: z.literal("auto-train") }),
   z.object({ kind: z.literal("resolve"), symbol: quoteSymbol, outcome: z.enum(["yes", "no"]) }),
   z.object({ kind: z.literal("fit"), id: uuid, symbol: quoteSymbol, synthetic: z.boolean(), config: fitConfig }),
   z.object({ kind: z.literal("activate-model"), id: uuid, modelId: z.string().regex(/^[0-9a-f]{20}$/) }),
@@ -83,6 +85,11 @@ export async function POST(req: NextRequest) {
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
+    if (input.kind === "auto-train") return reply({ answer: await trainWorkspace(owner) });
+    if (input.kind === "ask-training") {
+      const agent = await transact(owner, desk => agentFor(desk, input.id));
+      return reply({ answer: await answerTraining(agent, input.modelId, input.question) });
+    }
     if (input.kind === "verify-anchor") {
       const decision = await transact(owner, desk => desk.decisions.find(item => item.id === input.id));
       const signature = decision?.anchor?.signature;
@@ -246,6 +253,7 @@ export async function POST(req: NextRequest) {
         case "advance":
           if (desk.mode !== "replay") throw new Error("Switch to replay before advancing.");
           advance(desk);
+          runReplayDesk(desk, currentSnapshot(desk)!);
           break;
         case "refresh-live": {
           if (desk.mode !== "live" || !live) return { desk, refreshed: false, runs: 0 };
@@ -293,7 +301,6 @@ export async function POST(req: NextRequest) {
             saveVersion(agent, { ...input.config, markets: input.config.markets ?? latest(agent).markets });
           }
           break;
-        case "ask-training": return { answer: answerTraining(agentFor(desk, input.id), input.modelId, input.question) };
         case "ask": return { answer: answer(desk, input.question) };
         case "propose": {
           agentFor(desk, input.id);
