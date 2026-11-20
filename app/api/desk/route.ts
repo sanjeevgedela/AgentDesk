@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   advance, configSchema, currentSnapshot, evidenceFor, latest, newAgent, recommendation, record,
-  REPLAY_SYMBOL, reserve, reserved, signal, type Agent, type Desk, type Purchase, type Snapshot,
+  REPLAY_SYMBOL, reserve, reserved, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
 } from "../../../lib/engine";
 import { geminiSnapshots } from "../../../lib/gemini";
+import { evaluateInstructions } from "../../../lib/instructions";
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
 import { operator, transact } from "../../../lib/store";
@@ -23,6 +24,7 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("confirm"), id: uuid }),
   z.object({ kind: z.literal("buy"), id: uuid, decision: uuid, requestId: uuid }),
   z.object({ kind: z.literal("reconcile"), id: uuid }),
+  z.object({ kind: z.literal("apply-review"), id: uuid }),
   z.object({ kind: z.literal("voice") }),
 ]);
 const cookie = "agentdesk_session";
@@ -45,19 +47,23 @@ function agentFor(desk: Desk, id: string): Agent {
   return agent;
 }
 
-function confirmed(purchase: Purchase, snapshot: Snapshot, programs: readonly string[], evidence = evidenceFor(snapshot)) {
+function confirmed(desk: Desk, purchase: Purchase, snapshot: Snapshot, programs: readonly string[], evidence = evidenceFor(snapshot)) {
   purchase.status = "confirmed";
   purchase.programs = [...programs];
   purchase.evidence = evidence.text;
-  purchase.after = evidence.spread <= 5 ? (purchase.before === "hold" && snapshot.ask < 50 ? "buy" : purchase.before) : "hold";
-  purchase.reason = "Devnet USDC transfer confirmed. The revised recommendation is recorded without placing a paper order.";
+  const decision = desk.decisions.find(d => d.id === purchase.decision);
+  const version = agentFor(desk, purchase.agent).versions.find(v => v.number === decision?.version);
+  const rules = version && evaluateInstructions(version.instructions, snapshot);
+  purchase.after = evidence.spread > 5 || !rules || rules.notes.length ? "hold"
+    : rules.matched?.action ?? (purchase.before === "hold" && snapshot.ask < 50 ? "buy" : purchase.before);
+  purchase.reason = "Devnet USDC transfer confirmed. Review the recommendation before applying it to the paper portfolio.";
 }
 
 export async function GET(req: NextRequest) {
   const { auth, owner, reply } = scope(req);
   if (req.headers.has("authorization") && !auth) return reply({ error: "Operator token rejected." }, 401);
   try {
-    return reply({ desk: await transact(owner, desk => desk), auth, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
+    return reply({ desk: await transact(owner, desk => desk), auth, model: auth && !!process.env.OPENAI_API_KEY, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
   } catch { return reply({ error: "Workspace storage is unavailable. Check database setup." }, 503); }
 }
 
@@ -68,7 +74,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["confirm", "buy", "reconcile", "voice"].includes(input.kind) && !auth)
+  if (["confirm", "buy", "reconcile", "apply-review", "voice"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -96,7 +102,7 @@ export async function POST(req: NextRequest) {
             Object.assign(purchase, receipt);
           }));
           await transact(owner, desk => {
-            confirmed(desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.programs, result.evidence);
+            confirmed(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.programs, result.evidence);
           });
         } catch (err) {
           await transact(owner, desk => {
@@ -112,6 +118,23 @@ export async function POST(req: NextRequest) {
       }
       return reply({ desk: await transact(owner, desk => desk) });
     }
+    if (input.kind === "apply-review") {
+      return reply(await transact(owner, desk => {
+        const purchase = desk.purchases.find(p => p.id === input.id && p.status === "confirmed");
+        if (!purchase?.after || purchase.after === "hold") throw new Error("There is no confirmed trade recommendation to apply.");
+        const existing = desk.decisions.find(d => d.researchPurchase === purchase.id);
+        if (existing) return { desk, decision: existing, reused: true };
+        const original = desk.decisions.find(d => d.id === purchase.decision);
+        const snapshot = currentSnapshot(desk);
+        const agent = agentFor(desk, purchase.agent);
+        if (!original || !snapshot || snapshot.id !== original.snapshot.id || latest(agent).number !== original.version)
+          throw new Error("The review applies to its original quote and strategy version. Run the agent on the current quote.");
+        const decision = record(desk, agent, snapshot, {
+          action: purchase.after, reason: "Operator applied the confirmed quote review recommendation.",
+        }, [{ name: "confirmed_research", result: purchase.id }], purchase.id);
+        return { desk, decision, reused: false };
+      }));
+    }
     if (input.kind === "reconcile") {
       const purchase = await transact(owner, desk => desk.purchases.find(p => p.id === input.id));
       if (!purchase || !["pending", "uncertain"].includes(purchase.status)) throw new Error("No unresolved purchase with that ID.");
@@ -119,7 +142,7 @@ export async function POST(req: NextRequest) {
       return reply({ desk: await transact(owner, desk => {
         const saved = desk.purchases.find(p => p.id === input.id)!;
         if (!["pending","uncertain"].includes(saved.status)) return desk;
-        if (result.state === "confirmed") confirmed(saved, desk.decisions.find(d => d.id === saved.decision)!.snapshot, result.programs);
+        if (result.state === "confirmed") confirmed(desk, saved, desk.decisions.find(d => d.id === saved.decision)!.snapshot, result.programs);
         else if (result.state === "failed") { saved.status = "failed"; saved.reason = "Devnet recorded a failed transaction. Budget released."; }
         else { saved.reason = "No conclusive devnet receipt. Budget remains reserved and duplicate payment stays blocked."; }
         return desk;
@@ -132,22 +155,43 @@ export async function POST(req: NextRequest) {
         const snapshot = currentSnapshot(desk);
         if (!snapshot) throw new Error("Choose a market with a saved snapshot.");
         const version = latest(agent);
-        if (!version.active || !version.markets.includes(snapshot.symbol)) throw new Error("Activate this agent and allow the selected market in its settings.");
-        return { snapshot, version, baseline: recommendation(version, signal(desk, snapshot)) };
+        if (!version.active) throw new Error("This agent is paused. Activate it in Edit.");
+        if (!version.markets.includes(snapshot.symbol))
+          throw new Error(`Allow ${snapshot.symbol} in this agent’s settings before running it.`);
+        const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === version.number && !d.researchPurchase);
+        const change = signal(desk, snapshot);
+        return { snapshot, version, change, existing, baseline: recommendation(version, change), desk };
       });
-      let proposal;
-      try { proposal = auth ? await interpret(original.version, original.snapshot, original.baseline) : original.baseline; }
-      catch { throw new Error("Model output could not be validated. No paper trade was placed."); }
-      return reply({ desk: await transact(owner, desk => {
+      if (original.existing) return reply({ desk: original.desk, decision: original.existing, reused: true });
+
+      const { matched, notes } = evaluateInstructions(original.version.instructions, original.snapshot);
+      let proposal: Proposal = matched ?? original.baseline;
+      let source = matched ? "saved_instruction" : "strategy_rule";
+      if (!matched && auth && process.env.OPENAI_API_KEY) {
+        try {
+          proposal = await interpret({ ...original.version, instructions: notes.join("\n") }, original.snapshot, original.baseline, original.change);
+          source = "model_interpretation";
+        } catch {
+          proposal = { action: "hold", reason: "The model did not return a valid response. The run recorded a hold." };
+          source = "model_unavailable";
+        }
+      } else if (!matched && notes.length) {
+        proposal = { action: "hold", reason: "Some instructions require an enabled model. The run recorded a hold." };
+        source = "instructions_require_model";
+      }
+
+      return reply(await transact(owner, desk => {
         const agent = agentFor(desk, input.id);
         if (latest(agent).number !== original.version.number || currentSnapshot(desk)?.id !== original.snapshot.id)
           throw new Error("The strategy or market changed during this run. Try again.");
-        record(desk, agent, original.snapshot, proposal, [
+        const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === original.snapshot.id && d.version === original.version.number && !d.researchPurchase);
+        if (existing) return { desk, decision: existing, reused: true };
+        const decision = record(desk, agent, original.snapshot, proposal, [
           { name: "market_snapshot", result: original.snapshot.source },
-          { name: auth && process.env.OPENAI_API_KEY ? "model_interpretation" : "strategy_rule", result: proposal.reason },
+          { name: source, result: proposal.reason },
         ]);
-        return desk;
-      }) });
+        return { desk, decision, reused: false };
+      }));
     }
     return reply(await transact(owner, desk => {
       switch (input.kind) {

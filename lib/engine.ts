@@ -27,6 +27,7 @@ export type Decision = {
   id: string; agent: string; version: number; snapshot: Snapshot; at: string;
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
   resource?: typeof RESOURCE;
+  researchPurchase?: string;
   fill: { quantity: number; price: number; fee: number } | null;
   tools: { name: string; result: string }[];
 };
@@ -84,10 +85,10 @@ export function recommendation(config: Config, change: number | null): Proposal 
   const direction = config.strategy === "Contrarian" ? -change : change;
   return { action: direction > 0 ? "buy" : "sell", reason: `${config.strategy} signal from a ${change.toFixed(1)}¢ midpoint move.` };
 }
-export function record(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, tools: Decision["tools"]) {
+export function record(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, tools: Decision["tools"], researchPurchase?: string) {
   const config = latest(agent);
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
-  if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number))
+  if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number && d.researchPurchase === researchPurchase))
     throw new Error("This strategy version already ran on this snapshot.");
   const position = agent.positions[snapshot.symbol] ?? 0;
   const price = proposal.action === "buy" ? snapshot.ask : snapshot.bid;
@@ -100,10 +101,16 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: P
     agent.positions[snapshot.symbol] = position + delta;
     agent.cash -= delta * price + fee;
   }
+  const policy = fill ? "Paper order filled at the observed quote."
+    : proposal.action === "hold" ? "No order proposed."
+    : proposal.action === "sell" && position === 0 ? "No contracts to sell."
+    : proposal.action === "buy" && position >= config.positionLimit ? "Position limit reached."
+    : proposal.action === "buy" ? "Insufficient paper cash for one contract and the fee."
+    : "Sale proceeds would not cover the fee.";
   const decision: Decision = {
     id: crypto.randomUUID(), agent: agent.id, version: config.number, snapshot, at: new Date().toISOString(),
-    change: signal(desk, snapshot), ...proposal, fill, tools,
-    policy: fill ? "Simulated fill at the observed quote." : proposal.action === "hold" ? "No order proposed." : "Size, cash, fee or position limit blocked the fill.",
+    change: signal(desk, snapshot), ...proposal, researchPurchase, fill, tools,
+    policy,
   };
   desk.decisions.push(decision);
   return decision;

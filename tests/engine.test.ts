@@ -71,7 +71,7 @@ test("invalid model actions and extra arguments fail validation", () => {
 test("anonymous spending, configuration confirmation and voice requests are rejected", async () => {
   assert.equal(operator("Bearer wrong"), false);
   const id = crypto.randomUUID();
-  for (const body of [{ kind: "buy", id, decision: id, requestId: id }, { kind: "confirm", id }, { kind: "voice" }]) {
+  for (const body of [{ kind: "buy", id, decision: id, requestId: id }, { kind: "confirm", id }, { kind: "apply-review", id }, { kind: "voice" }]) {
     const response = await POST(new NextRequest("http://localhost/api/desk", {
       method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
     }));
@@ -101,4 +101,36 @@ test("reconciliation requires exact mint credit and reports onchain failure", as
   assert.equal((await verifyReceipt(receipt)).state, "uncertain");
   result = tx("500000");
   assert.deepEqual(await verifyReceipt(receipt), { state: "confirmed", programs: [programId] });
+});
+
+test("running an agent applies saved instructions and returns the original decision on repeat", async () => {
+  const owner = crypto.randomUUID();
+  const { id, other } = await transact(owner, desk => {
+    advance(desk);
+    latest(desk.agents[0]).instructions = "Buy when ask is below 50¢\nAlways hold";
+    latest(desk.agents[1]).instructions = "Buy when YES falls below 47¢";
+    return { id: desk.agents[0].id, other: desk.agents[1].id };
+  });
+  const run = (agent: string) => POST(new NextRequest("http://localhost/api/desk", {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: "agentdesk_session=" + owner },
+    body: JSON.stringify({ kind: "run", id: agent }),
+  }));
+  try {
+    const response = await run(id);
+    assert.equal(response.status, 200);
+    const first = await response.json();
+    assert.equal(first.decision.action, "hold");
+    assert.match(first.decision.reason, /Always hold/);
+    assert.equal(first.decision.fill, null);
+    const repeated = await (await run(id)).json();
+    assert.equal(repeated.reused, true);
+    assert.equal(repeated.decision.id, first.decision.id);
+    assert.equal(repeated.desk.decisions.length, 1);
+    const instructed = await (await run(other)).json();
+    assert.equal(instructed.decision.action, "buy");
+    assert.equal(instructed.decision.fill.quantity, 5);
+  } finally {
+    await rm(".agentdesk/" + owner + ".json", { force: true });
+  }
 });
