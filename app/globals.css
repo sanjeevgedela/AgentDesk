@@ -214,3 +214,19 @@ body { background: radial-gradient(ellipse at 75% -5%, #1a2a3c 0, var(--bg) 52%)
   .demo-copy h2 { font-size: clamp(31px, 10vw, 48px); }
   .demo-steps li { padding: 6px; }
 }
+
+.validation-steps { display: flex; flex-wrap: wrap; gap: 5px; list-style: none; padding: 0; margin: 8px 0; }
+.validation-steps li { background: var(--deep); color: var(--green); border-radius: 5px; padding: 3px 6px; font-size: 11px; }
+.validation-steps li.failed { background: #4b2e39; color: #ffc0c5; }
+.validation-steps li span { margin-left: 5px; }
+.audit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; margin-top: 8px; }
+.audit-error { color: #ffc0c5; font-weight: 750; }
+.history-mini, .equity-panel, .training-panel { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.mini-chart { display: block; width: 100%; height: 52px; }
+.training-panel summary { cursor: pointer; font-size: 13px; font-weight: 650; margin-bottom: 5px; }
+.training-panel p { font-size: 12px; }
+.data-hash { display: block; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.posterior { display: grid; grid-template-columns: 58px 1fr 30px; align-items: center; font-size: 10px; }
+.posterior meter { width: 100%; height: 9px; }
+.policy-preview { display: flex; flex-wrap: wrap; gap: 5px; }
+.policy-preview small { width: 100%; overflow-wrap: anywhere; }

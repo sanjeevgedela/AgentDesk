@@ -1,12 +1,16 @@
 "use client";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { currentSnapshot, dollars, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
+import { z } from "zod";
+import { DecisionAudit, ValidationSteps } from "./components/audit";
+import { PolicyPreview, Sparkline, TrainingPanel } from "./components/training";
+import { agentStats, currentSnapshot, INITIAL_CASH, dollars, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
 
-type Payload = { desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
+type Payload = { proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const historySchema = z.object({ bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
 const suggestions = ["Why did the agents disagree?", "How much research did each agent buy?", "What changed between strategy versions?"];
 
 export default function Dashboard() {
@@ -26,6 +30,8 @@ function DeskView() {
   const [operation, setBusy] = useState("");
   const busy = operation || running;
   const [error, setError] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [history, setHistory] = useState<{ symbol: string; count: number; hash: string; values: number[] }>();
   const [editing, setEditing] = useState<Agent | "new">();
   const [addMarket, setAddMarket] = useState(false);
   const [funding, setFunding] = useState<Agent>();
@@ -91,6 +97,18 @@ function DeskView() {
   });
   const talking = voice.status === "connected";
   const snapshot = desk && currentSnapshot(desk);
+  useEffect(() => {
+    if (!snapshot || snapshot.mode === "replay") return;
+    const controller = new AbortController();
+    const symbol = snapshot.symbol;
+    void fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&limit=5000`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error("History unavailable")))
+      .then(raw => {
+        const parsed = historySchema.parse(raw);
+        setHistory({ symbol, count: parsed.bars.length, hash: parsed.hash, values: parsed.bars.slice(-50).map(bar => (bar.bid + bar.ask) / 2) });
+      }).catch(() => {});
+    return () => controller.abort();
+  }, [snapshot]);
   const markets = desk ? [...new Map(desk.snapshots.filter(s => s.mode === desk.mode).map(s => [s.symbol, s])).values()] : [];
   const series = desk?.snapshots.filter(s => s.symbol === desk.selected && s.mode === desk.mode).slice(-16) ?? [];
   const points = series.map((s, i) => `${series.length === 1 ? 400 : 12 + 776 * i / (series.length - 1)},${165 - (s.bid + s.ask) * .75}`).join(" ");
@@ -140,7 +158,7 @@ function DeskView() {
     const data = new FormData(event.currentTarget);
     const config = { name: data.get("name"), strategy: data.get("strategy"), instructions: data.get("instructions"),
       threshold: Number(data.get("threshold")), positionLimit: Number(data.get("limit")),
-      markets: String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean), active: data.has("active") };
+      auto: auth ? data.has("auto") : undefined, markets: String(data.get("markets")).split(",").map(s => s.trim()).filter(Boolean), active: data.has("active") };
     return perform("Saving strategy", async () => {
       await request({ kind: "save", config, id: editing === "new" ? undefined : editing?.id });
       setEditing(undefined);
@@ -210,28 +228,46 @@ function DeskView() {
                 {series.length > 1 ? <><polygon points={`12,168 ${points} 788,168`} fill="url(#chart-fill)" /><polyline points={points} fill="none" stroke="#73efbd" strokeWidth="3" vectorEffect="non-scaling-stroke" /></> : <circle cx="400" cy={165 - (snapshot.bid + snapshot.ask) * .75} r="5" fill="#73efbd" />}
               </svg>
               <div className="market-foot"><span>{snapshot.symbol}</span><span>Observed {date(snapshot.at)}</span></div>
+              {snapshot.mode === "live" && history?.symbol === snapshot.symbol && <div className="history-mini">
+                <small>{history.count} recorded observations · SHA-256 <code title={history.hash}>{history.hash.slice(0, 12)}…</code></small>
+                <Sparkline values={history.values} label="Recent recorded market midpoints" />
+              </div>}
             </>}
           </section>
-          <section id="agents"><div className="section-head"><h2>Agents</h2><button className="primary" onClick={() => { setAddMarket(true); setEditing("new"); }}>+ New agent</button></div>
+          <section id="agents"><div className="section-head"><h2>Agents</h2><button className="primary" onClick={() => { setAddMarket(true); setInstructions(""); setEditing("new"); }}>+ New agent</button></div>
             <div className="agents">{desk.agents.map((agent, i) => {
               const config = latest(agent);
               const decision = desk.decisions.findLast(d => d.agent === agent.id);
               const currentDecision = desk.decisions.findLast(d => d.agent === agent.id && d.snapshot.id === snapshot?.id && d.version === config.number && !d.researchPurchase);
               const latestRun = decision?.id === runResult?.id ? decision : currentDecision;
+              const stats = agentStats(desk, agent);
+              const training = agent.training?.at(-1);
+              const marketDecisions = desk.decisions.filter(item => item.agent === agent.id && item.snapshot.symbol === snapshot?.symbol && item.equityAfter !== undefined);
+              const firstAsk = marketDecisions[0]?.snapshot.ask;
+              const baseline = firstAsk === undefined ? [] : marketDecisions.map(item => INITIAL_CASH - firstAsk - 1 + (item.snapshot.bid + item.snapshot.ask) / 2);
               const needsMarket = snapshot && !config.markets.includes(snapshot.symbol);
               const runSource = latestRun?.tools.findLast(tool => tool.name !== "policy_guard")?.name;
-              const sourceLabel = runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
+              const sourceLabel = runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "paid_research" || runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
               return <article className="panel agent" key={agent.id}>
                 <div className="agent-top"><span className={`agent-icon tone-${i % 3}`}>{i % 3 === 0 ? <span className="trend-glyph" /> : ["⇄", "◇"][i % 3 - 1]}</span><span className={`pill ${config.active ? "good" : ""}`}>{config.active ? "Active" : "Paused"}</span></div>
                 <h3>{config.name}</h3><p>{config.strategy} · v{config.number}</p>
-                <dl><div><dt>Paper equity</dt><dd>{dollars(valuation(agent))}</dd></div>{auth && <div><dt>Research cap</dt><dd>{usdc(agent.cap)}</dd></div>}<div><dt>Open contracts</dt><dd>{Object.values(agent.positions).reduce((a, b) => a + b, 0)}</dd></div></dl>
+                <dl><div><dt>Paper equity</dt><dd>{dollars(stats.equity)}</dd></div><div><dt>Paper P&L</dt><dd>{dollars(stats.pnl)}</dd></div>{auth && <div><dt>Research cap</dt><dd>{usdc(agent.cap)}</dd></div>}<div><dt>Open contracts</dt><dd>{Object.values(agent.positions).reduce((a, b) => a + b, 0)}</dd></div></dl>
                 <div className="agent-actions">
                   <button className="primary" disabled={!!busy || !config.active || !snapshot || !!needsMarket} onClick={() => currentDecision ? (location.hash = "decision-" + currentDecision.id) : void run(agent)}>
                     {running === agent.id ? "Evaluating…" : currentDecision ? "View current run" : "Run agent"}
                   </button>
-                  <button className="quiet" disabled={!!busy} onClick={() => { setAddMarket(!!needsMarket); setEditing(agent); }}>{needsMarket ? "Edit allowed markets" : "Edit"}</button>
+                  <button className="quiet" disabled={!!busy} onClick={() => { setAddMarket(!!needsMarket); setInstructions(config.instructions); setEditing(agent); }}>{needsMarket ? "Edit allowed markets" : "Edit"}</button>
                   {auth && <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>}
+                  {auth && <button className="quiet" disabled={!!busy || !snapshot || !!needsMarket} onClick={() =>
+                    act("Training strategy", { kind: "train", id: agent.id, symbol: snapshot?.symbol, synthetic: desk.mode === "replay" })}>
+                    {desk.mode === "replay" ? "Train on SYNTHETIC" : "Train"}
+                  </button>}
                 </div>
+                {marketDecisions.length > 1 && <div className="equity-panel">
+                  <small>Paper equity · dashed: hold one YES</small>
+                  <Sparkline values={marketDecisions.map(item => item.equityAfter!)} baseline={baseline} label="Paper equity versus buy-and-hold benchmark" />
+                </div>}
+                {training && <TrainingPanel training={training} />}
                 {needsMarket && <p className="run-note">Add {snapshot.symbol} to this agent’s allowed markets.</p>}
                 {runIssue?.agent === agent.id && <p className="run-note run-error" role="alert">{runIssue.message}</p>}
                 {latestRun && <div className="run-result" aria-live="polite">
@@ -247,12 +283,16 @@ function DeskView() {
           <div className="details">
             <section className="panel feed" id="activity"><h2>Decision log</h2>
               {!desk.decisions.length && <p className="empty">Run an agent to record its signal, recommendation and simulated fill.</p>}
-              {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}</article>)}
+              {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}
+                <DecisionAudit decision={d} busy={!!busy} verify={() => perform("Verifying decision memo", async () => {
+                  const result = await request({ kind: "verify-anchor", id: d.id });
+                  if (result.proof?.state === "uncertain") throw new Error("Solana RPC has not confirmed the memo yet.");
+                })} /></article>)}
             </section>
             <section className="panel feed" id="research"><h2>Research payments</h2>
               <p className="empty">{auth ? "Verified quote reviews use Solana devnet test USDC." : "Request a quote review and apply its recommendation to your paper portfolio."}</p>
               {auth && desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
-              {[...desk.purchases].reverse().map(p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}
+              {[...desk.purchases].reverse().map(p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}<ValidationSteps stages={p.validation} />
                 {(p.status === "confirmed" || p.status === "simulated") && p.after && p.after !== "hold" &&
                   (desk.decisions.find(d => d.researchPurchase === p.id)
                     ? <p><a href={"#decision-" + desk.decisions.find(d => d.researchPurchase === p.id)?.id}>Applied paper decision</a></p>
@@ -294,11 +334,13 @@ function DeskView() {
       {error && <p role="alert" className="alert">{error}</p>}
       <label>Name<input name="name" defaultValue={initial.name} maxLength={60} required /></label>
       <label>Strategy<select name="strategy" defaultValue={initial.strategy}>{strategies.map(s => <option key={s}>{s}</option>)}</select></label>
-      <label>Strategy instructions<textarea name="instructions" defaultValue={initial.instructions} maxLength={2000} rows={3} placeholder={"Hold if spread exceeds 5¢\nBuy when ask is below 40¢"} /></label>
+      <label>Strategy instructions<textarea name="instructions" value={instructions} onChange={e => setInstructions(e.target.value)} maxLength={2000} rows={3} placeholder={"Hold if spread exceeds 5¢\nBuy when ask is below 40¢"} /></label>
+      <PolicyPreview instructions={instructions} />
       <small>Use one rule per line. Examples include “Always hold” and “Buy when YES falls below 40¢.” Matching holds take priority. Other instructions require AI.</small>
       <label>Allowed market symbols<input name="markets" defaultValue={[...new Set([...(initial.markets ?? []), ...(addMarket && snapshot ? [snapshot.symbol] : [])])].join(", ")} required /></label>
       {snapshot && <small className="empty">Selected market: {snapshot.symbol}</small>}
       <div className="form-grid"><label>Signal threshold (¢)<input name="threshold" type="number" min={1} max={40} defaultValue={initial.threshold ?? 3} required /></label><label>Position limit<input name="limit" type="number" min={1} max={1000} defaultValue={initial.positionLimit ?? 25} required /></label></div>
+      {auth && <label className="check"><input name="auto" type="checkbox" defaultChecked={initial.auto ?? false} /> Scheduled paper runs and retraining</label>}
       <label className="check"><input name="active" type="checkbox" defaultChecked={initial.active ?? true} /> Active</label>
       <div className="dialog-actions"><button type="button" className="quiet" onClick={() => setEditing(undefined)}>Cancel</button><button className="primary" disabled={!!busy}>Save strategy</button></div></form></div>}
     {funding && <div className="overlay"><form className="panel dialog" onSubmit={e => {
