@@ -1,0 +1,367 @@
+{
+  "symbol": "SYNTHETIC",
+  "synthetic": true,
+  "hash": "72541c08001f7f5b0585c37ed7dbb2efc79edf59938af6de1cf5875c3add2721",
+  "observations": 600,
+  "first": "2026-01-01T00:00:00.000Z",
+  "last": "2026-01-03T01:55:00.000Z",
+  "seed": 17,
+  "trainLen": 160,
+  "testLen": 40,
+  "variants": [
+    {
+      "slippage": 0,
+      "trained": {
+        "pnl": 5301.5,
+        "maxDrawdown": 300,
+        "trades": 101,
+        "fees": 101,
+        "sharpe": 0.23764102015951294
+      },
+      "untrained": {
+        "pnl": 5301.5,
+        "maxDrawdown": 300,
+        "trades": 101,
+        "fees": 101,
+        "sharpe": 0.23764102015951294
+      },
+      "buyAndHold": 6,
+      "random": {
+        "runs": 200,
+        "mean": -1721.4675,
+        "p95": 28
+      },
+      "deltaCi90": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "beatsUntrained": false,
+        "beatsBuyAndHold": true,
+        "beatsRandomMean": true
+      },
+      "folds": [
+        {
+          "trainStart": 0,
+          "trainEnd": 160,
+          "testStart": 160,
+          "testEnd": 200,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 801,
+          "untrainedPnl": 801
+        },
+        {
+          "trainStart": 40,
+          "trainEnd": 200,
+          "testStart": 200,
+          "testEnd": 240,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -94,
+          "untrainedPnl": -94
+        },
+        {
+          "trainStart": 80,
+          "trainEnd": 240,
+          "testStart": 240,
+          "testEnd": 280,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 1057,
+          "untrainedPnl": 1057
+        },
+        {
+          "trainStart": 120,
+          "trainEnd": 280,
+          "testStart": 280,
+          "testEnd": 320,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -158,
+          "untrainedPnl": -158
+        },
+        {
+          "trainStart": 160,
+          "trainEnd": 320,
+          "testStart": 320,
+          "testEnd": 360,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 894,
+          "untrainedPnl": 894
+        },
+        {
+          "trainStart": 200,
+          "trainEnd": 360,
+          "testStart": 360,
+          "testEnd": 400,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -112.5,
+          "untrainedPnl": -112.5
+        },
+        {
+          "trainStart": 240,
+          "trainEnd": 400,
+          "testStart": 400,
+          "testEnd": 440,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 851.5,
+          "untrainedPnl": 851.5
+        },
+        {
+          "trainStart": 280,
+          "trainEnd": 440,
+          "testStart": 440,
+          "testEnd": 480,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -228,
+          "untrainedPnl": -228
+        },
+        {
+          "trainStart": 320,
+          "trainEnd": 480,
+          "testStart": 480,
+          "testEnd": 520,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 1586,
+          "untrainedPnl": 1586
+        },
+        {
+          "trainStart": 360,
+          "trainEnd": 520,
+          "testStart": 520,
+          "testEnd": 560,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -215,
+          "untrainedPnl": -215
+        },
+        {
+          "trainStart": 400,
+          "trainEnd": 560,
+          "testStart": 560,
+          "testEnd": 600,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 919.5,
+          "untrainedPnl": 919.5
+        }
+      ]
+    },
+    {
+      "slippage": 1,
+      "trained": {
+        "pnl": 4820,
+        "maxDrawdown": 376,
+        "trades": 100,
+        "fees": 100,
+        "sharpe": 0.21540579120474462
+      },
+      "untrained": {
+        "pnl": 4820,
+        "maxDrawdown": 376,
+        "trades": 100,
+        "fees": 100,
+        "sharpe": 0.21540579120474462
+      },
+      "buyAndHold": -5,
+      "random": {
+        "runs": 200,
+        "mean": -2778.0125,
+        "p95": -1026.5
+      },
+      "deltaCi90": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "beatsUntrained": false,
+        "beatsBuyAndHold": true,
+        "beatsRandomMean": true
+      },
+      "folds": [
+        {
+          "trainStart": 0,
+          "trainEnd": 160,
+          "testStart": 160,
+          "testEnd": 200,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 756,
+          "untrainedPnl": 756
+        },
+        {
+          "trainStart": 40,
+          "trainEnd": 200,
+          "testStart": 200,
+          "testEnd": 240,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -114,
+          "untrainedPnl": -114
+        },
+        {
+          "trainStart": 80,
+          "trainEnd": 240,
+          "testStart": 240,
+          "testEnd": 280,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 992,
+          "untrainedPnl": 992
+        },
+        {
+          "trainStart": 120,
+          "trainEnd": 280,
+          "testStart": 280,
+          "testEnd": 320,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -198,
+          "untrainedPnl": -198
+        },
+        {
+          "trainStart": 160,
+          "trainEnd": 320,
+          "testStart": 320,
+          "testEnd": 360,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 839,
+          "untrainedPnl": 839
+        },
+        {
+          "trainStart": 200,
+          "trainEnd": 360,
+          "testStart": 360,
+          "testEnd": 400,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -137.5,
+          "untrainedPnl": -137.5
+        },
+        {
+          "trainStart": 240,
+          "trainEnd": 400,
+          "testStart": 400,
+          "testEnd": 440,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 796.5,
+          "untrainedPnl": 796.5
+        },
+        {
+          "trainStart": 280,
+          "trainEnd": 440,
+          "testStart": 440,
+          "testEnd": 480,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -244.5,
+          "untrainedPnl": -244.5
+        },
+        {
+          "trainStart": 320,
+          "trainEnd": 480,
+          "testStart": 480,
+          "testEnd": 520,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 1541,
+          "untrainedPnl": 1541
+        },
+        {
+          "trainStart": 360,
+          "trainEnd": 520,
+          "testStart": 520,
+          "testEnd": 560,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": -265,
+          "untrainedPnl": -265
+        },
+        {
+          "trainStart": 400,
+          "trainEnd": 560,
+          "testStart": 560,
+          "testEnd": 600,
+          "used": {
+            "threshold": 3,
+            "positionLimit": 25
+          },
+          "promoted": false,
+          "trainedPnl": 854.5,
+          "untrainedPnl": 854.5
+        }
+      ]
+    }
+  ]
+}
