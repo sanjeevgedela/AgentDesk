@@ -15,6 +15,7 @@ const uuid = z.uuid();
 const amount = z.number().int().min(0).max(10_000_000);
 const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("advance") }),
+  z.object({ kind: z.literal("demo-run") }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
   z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema }),
@@ -47,16 +48,35 @@ function agentFor(desk: Desk, id: string): Agent {
   return agent;
 }
 
-function confirmed(desk: Desk, purchase: Purchase, snapshot: Snapshot, programs: readonly string[], evidence = evidenceFor(snapshot)) {
-  purchase.status = "confirmed";
-  purchase.programs = [...programs];
+function completeReview(desk: Desk, purchase: Purchase, snapshot: Snapshot, programs: readonly string[], evidence = evidenceFor(snapshot), simulated = false) {
+  purchase.status = simulated ? "simulated" : "confirmed";
+  if (!simulated) purchase.programs = [...programs];
   purchase.evidence = evidence.text;
   const decision = desk.decisions.find(d => d.id === purchase.decision);
   const version = agentFor(desk, purchase.agent).versions.find(v => v.number === decision?.version);
   const rules = version && evaluateInstructions(version.instructions, snapshot);
   purchase.after = evidence.spread > 5 || !rules || rules.notes.length ? "hold"
     : rules.matched?.action ?? (purchase.before === "hold" && snapshot.ask < 50 ? "buy" : purchase.before);
-  purchase.reason = "Devnet USDC transfer confirmed. Review the recommendation before applying it to the paper portfolio.";
+  purchase.reason = simulated ? "Demo purchase complete. Sample research is ready." : "Devnet USDC transfer confirmed. Research is ready.";
+}
+
+function evaluateRun(version: ReturnType<typeof latest>, snapshot: Snapshot, change: number | null) {
+  const { matched, notes } = evaluateInstructions(version.instructions, snapshot);
+  const baseline = recommendation(version, change);
+  return {
+    matched, notes, baseline,
+    proposal: matched ?? (notes.length
+      ? { action: "hold" as const, reason: "Some instructions require an enabled model. The run recorded a hold." }
+      : baseline),
+    source: matched ? "saved_instruction" : notes.length ? "instructions_require_model" : "strategy_rule",
+  };
+}
+
+function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string) {
+  return record(desk, agent, snapshot, proposal, [
+    { name: "market_snapshot", result: snapshot.source },
+    { name: source, result: proposal.reason },
+  ]);
 }
 
 export async function GET(req: NextRequest) {
@@ -74,7 +94,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["confirm", "buy", "reconcile", "apply-review", "voice"].includes(input.kind) && !auth)
+  if (["reconcile", "voice"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -93,16 +113,18 @@ export async function POST(req: NextRequest) {
         const agent = agentFor(desk, input.id);
         const decision = desk.decisions.find(d => d.id === input.decision && d.agent === agent.id);
         if (!decision?.resource) throw new Error("Choose a decision with an approved research request.");
-        return { ...reserve(desk, agent, decision, input.requestId, paymentReady()), snapshot: decision.snapshot };
+        const result = reserve(desk, agent, decision, input.requestId, !auth || paymentReady());
+        if (!auth && result.fresh) completeReview(desk, result.purchase, decision.snapshot, [], evidenceFor(decision.snapshot), true);
+        return { ...result, snapshot: decision.snapshot };
       });
-      if (work.fresh) {
+      if (auth && work.fresh) {
         try {
           const result = await pay(work.snapshot, receipt => transact(owner, desk => {
             const purchase = desk.purchases.find(p => p.id === work.purchase.id)!;
             Object.assign(purchase, receipt);
           }));
           await transact(owner, desk => {
-            confirmed(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.programs, result.evidence);
+            completeReview(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.programs, result.evidence);
           });
         } catch (err) {
           await transact(owner, desk => {
@@ -120,8 +142,8 @@ export async function POST(req: NextRequest) {
     }
     if (input.kind === "apply-review") {
       return reply(await transact(owner, desk => {
-        const purchase = desk.purchases.find(p => p.id === input.id && p.status === "confirmed");
-        if (!purchase?.after || purchase.after === "hold") throw new Error("There is no confirmed trade recommendation to apply.");
+        const purchase = desk.purchases.find(p => p.id === input.id && p.status === (auth ? "confirmed" : "simulated"));
+        if (!purchase?.after || purchase.after === "hold") throw new Error("There is no completed review with a trade recommendation.");
         const existing = desk.decisions.find(d => d.researchPurchase === purchase.id);
         if (existing) return { desk, decision: existing, reused: true };
         const original = desk.decisions.find(d => d.id === purchase.decision);
@@ -130,8 +152,8 @@ export async function POST(req: NextRequest) {
         if (!original || !snapshot || snapshot.id !== original.snapshot.id || latest(agent).number !== original.version)
           throw new Error("The review applies to its original quote and strategy version. Run the agent on the current quote.");
         const decision = record(desk, agent, snapshot, {
-          action: purchase.after, reason: "Operator applied the confirmed quote review recommendation.",
-        }, [{ name: "confirmed_research", result: purchase.id }], purchase.id);
+          action: purchase.after, reason: auth ? "Operator applied the confirmed quote review recommendation." : "Applied the simulated quote review recommendation.",
+        }, [{ name: auth ? "confirmed_research" : "simulated_research", result: purchase.id }], purchase.id);
         return { desk, decision, reused: false };
       }));
     }
@@ -142,11 +164,30 @@ export async function POST(req: NextRequest) {
       return reply({ desk: await transact(owner, desk => {
         const saved = desk.purchases.find(p => p.id === input.id)!;
         if (!["pending","uncertain"].includes(saved.status)) return desk;
-        if (result.state === "confirmed") confirmed(desk, saved, desk.decisions.find(d => d.id === saved.decision)!.snapshot, result.programs);
+        if (result.state === "confirmed") completeReview(desk, saved, desk.decisions.find(d => d.id === saved.decision)!.snapshot, result.programs);
         else if (result.state === "failed") { saved.status = "failed"; saved.reason = "Devnet recorded a failed transaction. Budget released."; }
         else { saved.reason = "No conclusive devnet receipt. Budget remains reserved and duplicate payment stays blocked."; }
         return desk;
       }) });
+    }
+    if (input.kind === "demo-run") {
+      if (auth) return reply({ error: "The guided replay is available in the demo workspace." }, 400);
+      return reply(await transact(owner, desk => {
+        if (desk.mode !== "replay") throw new Error("Open replay to run the guided demo.");
+        if (desk.replay === 0) advance(desk);
+        const snapshot = currentSnapshot(desk);
+        if (!snapshot) throw new Error("Replay quote unavailable.");
+        const agents = desk.agents.filter(a => latest(a).active && latest(a).markets.includes(snapshot.symbol));
+        if (!agents.length) throw new Error("Enable an agent for this replay market first.");
+        const change = signal(desk, snapshot);
+        for (const agent of agents) {
+          const version = latest(agent);
+          if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === version.number && !d.researchPurchase)) continue;
+          const { proposal, source } = evaluateRun(version, snapshot, change);
+          recordRun(desk, agent, snapshot, proposal, source);
+        }
+        return { desk };
+      }));
     }
     const live = input.kind === "mode" && input.mode === "live" ? await geminiSnapshots() : null;
     if (input.kind === "run") {
@@ -160,24 +201,21 @@ export async function POST(req: NextRequest) {
           throw new Error(`Allow ${snapshot.symbol} in this agent’s settings before running it.`);
         const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === version.number && !d.researchPurchase);
         const change = signal(desk, snapshot);
-        return { snapshot, version, change, existing, baseline: recommendation(version, change), desk };
+        return { snapshot, version, change, existing, desk };
       });
       if (original.existing) return reply({ desk: original.desk, decision: original.existing, reused: true });
 
-      const { matched, notes } = evaluateInstructions(original.version.instructions, original.snapshot);
-      let proposal: Proposal = matched ?? original.baseline;
-      let source = matched ? "saved_instruction" : "strategy_rule";
+      const { matched, notes, baseline, proposal: defaultProposal, source: defaultSource } = evaluateRun(original.version, original.snapshot, original.change);
+      let proposal = defaultProposal;
+      let source = defaultSource;
       if (!matched && auth && process.env.OPENAI_API_KEY) {
         try {
-          proposal = await interpret({ ...original.version, instructions: notes.join("\n") }, original.snapshot, original.baseline, original.change);
+          proposal = await interpret({ ...original.version, instructions: notes.join("\n") }, original.snapshot, baseline, original.change);
           source = "model_interpretation";
         } catch {
           proposal = { action: "hold", reason: "The model did not return a valid response. The run recorded a hold." };
           source = "model_unavailable";
         }
-      } else if (!matched && notes.length) {
-        proposal = { action: "hold", reason: "Some instructions require an enabled model. The run recorded a hold." };
-        source = "instructions_require_model";
       }
 
       return reply(await transact(owner, desk => {
@@ -186,10 +224,7 @@ export async function POST(req: NextRequest) {
           throw new Error("The strategy or market changed during this run. Try again.");
         const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === original.snapshot.id && d.version === original.version.number && !d.researchPurchase);
         if (existing) return { desk, decision: existing, reused: true };
-        const decision = record(desk, agent, original.snapshot, proposal, [
-          { name: "market_snapshot", result: original.snapshot.source },
-          { name: source, result: proposal.reason },
-        ]);
+        const decision = recordRun(desk, agent, original.snapshot, proposal, source);
         return { desk, decision, reused: false };
       }));
     }

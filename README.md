@@ -26,6 +26,10 @@ Open http://localhost:3000. Replay, the public Gemini feed, paper fills, strateg
 
 Set secrets in `.env.local` or the Vercel project environment. Keep the signer funded with a small amount of test tokens and use a recipient you control. The public workspace never invokes the model or controls the spending signer. The operator bearer is held in browser memory and must be entered again after reloading. This deployment model has a single trusted operator account.
 
+## Keyless demo
+
+Open the app and click **Run replay agents**. The guided replay advances to the first price move and records decisions from the default strategies. Use the demo controls to request a quote review, see the budget block, propose and confirm a higher limit, and apply the review to the paper portfolio. Refresh to continue where you left off. Demo budgets and spending belong to your browser session. Simulated receipts have no Solana signature. The separate operator workspace supports actual devnet payments and configured ElevenLabs sessions.
+
 ## Decision loop
 
 Live Gemini fetches public active events from the [Prediction Markets event API](https://developer.gemini.com/prediction-markets/market-data) and records open contracts with usable YES bids and asks. It timestamps observation and retains the source URL for each snapshot. Use **Refresh quotes** for another observation. Enable a live instrument by adding its symbol to the agent's allowed markets. Replay shows only synthetic snapshots that have been advanced and exposes a separate market symbol. Live errors surface in the UI.

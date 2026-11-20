@@ -1,7 +1,7 @@
 "use client";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { currentSnapshot, dollars, latest, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
+import { currentSnapshot, dollars, latest, PRICE, reserved, strategies, usdc, type Agent, type Config, type Decision, type Desk } from "../lib/engine";
 
 type Payload = { desk?: Desk; auth?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
@@ -97,7 +97,51 @@ function DeskView() {
     return sum + (mark ? qty * (mark.bid + mark.ask) / 2 : 0);
   }, 0);
   const active = desk?.agents.filter(a => latest(a).active).length ?? 0;
-  const settled = desk?.purchases.filter(p => p.status === "confirmed").reduce((s, p) => s + p.amount, 0) ?? 0;
+  const settled = desk?.purchases.filter(p => p.status === (auth ? "confirmed" : "simulated")).reduce((s, p) => s + p.amount, 0) ?? 0;
+  const eligible = desk?.agents.filter(a => latest(a).active && snapshot && latest(a).markets.includes(snapshot.symbol)) ?? [];
+  const reviewDecision = desk?.decisions.findLast(d => d.resource && d.snapshot.id === snapshot?.id &&
+    eligible.some(a => a.id === d.agent && latest(a).number === d.version));
+  const demoPurchase = desk?.purchases.findLast(p => p.decision === reviewDecision?.id);
+  const demoProposal = desk?.changes.find(c => c.agent === reviewDecision?.agent);
+  const reviewAgent = eligible.find(a => a.id === reviewDecision?.agent);
+  const requiredBudget = desk && reviewAgent ? reserved(desk, reviewAgent.id) + PRICE : PRICE;
+  const needsBudget = !!reviewAgent && (reviewAgent.cap < PRICE || reviewAgent.budget < requiredBudget);
+  const applied = desk?.decisions.find(d => d.researchPurchase && d.researchPurchase === demoPurchase?.id);
+  const reviewed = demoPurchase?.status === "simulated";
+  const demoStage = reviewed ? applied || demoPurchase.after === "hold" ? 4 : 3 : demoPurchase ? 2 : reviewDecision ? 1 : 0;
+
+  function nextDemoStep() {
+    if (!reviewDecision) return act("Running replay strategies", { kind: "demo-run" });
+    if (reviewed && demoPurchase) {
+      if (applied || demoPurchase.after === "hold") {
+        location.hash = "supervisor";
+        return ask("Did the quote review change the recommendation?");
+      }
+      return act("Applying paper recommendation", { kind: "apply-review", id: demoPurchase.id });
+    }
+    const agent = eligible.find(a => a.id === reviewDecision.agent);
+    if (!agent) return;
+    if (demoProposal) return act("Confirming demo budget", { kind: "confirm", id: demoProposal.id });
+    if (demoPurchase?.status === "blocked" && needsBudget) {
+      if (requiredBudget > 10_000_000) { setFunding(agent); return; }
+      return act("Proposing a new demo cap", { kind: "propose", id: agent.id, cap: Math.max(agent.cap, PRICE), budget: Math.max(agent.budget, requiredBudget) });
+    }
+    return act("Running quote review", { kind: "buy", id: agent.id, decision: reviewDecision.id, requestId: crypto.randomUUID() });
+  }
+
+  const demoLabel = demoStage === 0 ? "Run replay agents" : demoStage === 1 ? "Request quote review"
+    : demoStage === 3 ? "Apply paper order" : demoStage === 4 ? "Ask the supervisor"
+    : demoProposal ? "Confirm demo budget" : needsBudget
+      ? "Propose higher limit" : "Retry quote review";
+
+  const demoDetail = demoProposal ? `Proposed cap ${usdc(demoProposal.cap)} · Total budget ${usdc(demoProposal.budget)}`
+    : applied?.fill ? `Paper fill recorded · ${applied.fill.quantity} YES at ${applied.fill.price}¢`
+    : applied ? applied.policy
+    : reviewed ? `Quote review complete · Recommendation: ${demoPurchase.before} → ${demoPurchase.after}`
+    : demoPurchase?.status === "blocked" && !needsBudget ? "Budget approved. Retry the quote review to continue."
+    : demoPurchase ? demoPurchase.reason
+    : reviewDecision ? "Agent decisions saved. A quote review is ready to request."
+    : "Paper trades and research payments are simulated.";
 
   function ask(text: string) {
     setQuestion("");
@@ -123,7 +167,7 @@ function DeskView() {
     <aside className="rail">
       <a className="brand" href="#overview"><span className="brandmark" aria-hidden="true"><span className="trend-glyph" /></span><span>AgentDesk<small>Trading workspace</small></span></a>
       <nav aria-label="Workspace"><a href="#overview"><span>◫</span> Overview</a><a href="#agents"><span>◇</span> Agents</a><a href="#activity"><span>≋</span> Decisions</a><a href="#research"><span>◈</span> Research</a><a href="#supervisor"><span>◉</span> Supervisor</a></nav>
-      <div className="rail-note"><span className="pulse" /> Paper trading<br /><small>Solana devnet · Test USDC</small></div>
+      <div className="rail-note"><span className="pulse" /> Paper trading<br /><small>{auth ? "Solana devnet · Test USDC" : "Simulated research payments"}</small></div>
     </aside>
     <main id="overview">
       <header className="topbar"><span className="workspace-label"><span className="pulse" />{auth ? "Operator workspace" : "Demo workspace"} <small>{model ? "· Model available" : "· Rules mode"}</small></span><button className="quiet" disabled={!!busy} onClick={() => auth ? perform("Locking workspace", async () => {
@@ -133,9 +177,9 @@ function DeskView() {
         setRunIssue(undefined);
         setToken("");
         await request(undefined, "");
-      }) : setUnlock(true)}>{auth ? "Lock operator workspace" : "Unlock operator workspace"}</button></header>
+      }) : setUnlock(true)}>{auth ? "Return to demo" : "Operator access"}</button></header>
       <div className="canvas">
-        <section className="headline"><div><h1>Trading overview</h1><p>Track your agents, paper portfolios and paid research.</p></div><div className="modes" aria-label="Data mode">
+        <section className="headline"><div><h1>Trading desk</h1><p>Compare strategies, inspect paper fills, and review research decisions.</p></div><div className="modes" aria-label="Data mode">
           <button aria-pressed={desk?.mode === "replay"} disabled={!desk || !!busy} onClick={() => act("Opening replay", { kind: "mode", mode: "replay" })}>Replay</button>
           <button aria-pressed={desk?.mode === "live"} disabled={!desk || !!busy} onClick={() => act("Loading Gemini", { kind: "mode", mode: "live" })}>Live Gemini</button>
         </div></section>
@@ -143,10 +187,32 @@ function DeskView() {
         {operation && <div role="status" className="status">{operation}…</div>}
         {!desk && <div className="panel loading">{error ? <button onClick={() => perform("Loading workspace", () => request())}>Retry loading workspace</button> : "Loading your workspace…"}</div>}
         {desk && <>
+          {!auth && desk.mode === "replay" && <section className="demo-hero" aria-labelledby="demo-title">
+            <div className="demo-copy">
+              <p className="demo-kicker"><span className="pulse" /> Interactive demo</p>
+              <h2 id="demo-title">From market signal<br />to paper trade.</h2>
+              <p>Run the agents on the same quote, see a research budget block a purchase, then approve a new limit and compare the result.</p>
+              <div className="demo-actions">
+                <button className="primary" disabled={!!busy} onClick={nextDemoStep}>{demoLabel} <span aria-hidden="true">→</span></button>
+                <a href="#agents">Explore agents</a>
+              </div>
+              <small aria-live="polite">{demoDetail}</small>
+            </div>
+            <ol className="demo-steps" aria-label="Demo progress">
+              {["Evaluate the market", "Request research", "Review the spending limit", "Apply the paper decision"].map((label, index) =>
+                <li key={label} aria-current={demoStage === index ? "step" : undefined}>
+                  <span aria-hidden="true">{demoStage > index ? "✓" : index + 1}</span>
+                  <strong>{label}</strong>
+                  <small>{demoStage > index ? "Done" : demoStage === index ? "Up next" : ""}</small>
+                </li>
+              )}
+            </ol>
+          </section>}
+
           <section className="metrics" aria-label="Portfolio summary">
             <div className="panel metric"><span>Paper equity</span><strong>{dollars(desk.agents.reduce((sum, a) => sum + valuation(a), 0))}</strong><small>Across {desk.agents.length} independent portfolios</small></div>
             <div className="panel metric"><span>Active agents</span><strong>{active}<em> / {desk.agents.length}</em></strong><small>{desk.decisions.length} recorded decisions</small></div>
-            <div className="panel metric"><span>Settled research</span><strong>{usdc(settled)}</strong><small>Confirmed devnet test payments</small></div>
+            <div className="panel metric"><span>{auth ? "Settled research" : "Demo research spend"}</span><strong>{usdc(settled)}</strong><small>{auth ? "Confirmed devnet test payments" : "Simulated USDC"}</small></div>
           </section>
           <section className="panel market">
             <div className="section-head"><div><span className="eyebrow">{desk.mode === "replay" ? "SYNTHETIC REPLAY" : "GEMINI PREDICTION MARKETS"}</span><h2>{snapshot?.title || "Market snapshot"}</h2></div>
@@ -170,7 +236,7 @@ function DeskView() {
               const latestRun = decision?.id === runResult?.id ? decision : currentDecision;
               const needsMarket = snapshot && !config.markets.includes(snapshot.symbol);
               const runSource = latestRun?.tools.at(-1)?.name;
-              const sourceLabel = runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "confirmed_research" ? "Confirmed research" : "Safety hold";
+              const sourceLabel = runSource === "model_interpretation" ? "AI interpretation" : runSource === "saved_instruction" ? "Saved instruction" : runSource === "strategy_rule" ? "Strategy rule" : runSource === "confirmed_research" || runSource === "simulated_research" ? "Quote review" : "Safety hold";
               return <article className="panel agent" key={agent.id}>
                 <div className="agent-top"><span className={`agent-icon tone-${i % 3}`}>{i % 3 === 0 ? <span className="trend-glyph" /> : ["⇄", "◇"][i % 3 - 1]}</span><span className={`pill ${config.active ? "good" : ""}`}>{config.active ? "Active" : "Paused"}</span></div>
                 <h3>{config.name}</h3><p>{config.strategy} · v{config.number}</p>
@@ -190,7 +256,7 @@ function DeskView() {
                   <small>{latestRun.fill ? `Filled ${latestRun.fill.quantity} YES at ${latestRun.fill.price}¢` : latestRun.policy}</small>
                   <a href={"#decision-" + latestRun.id}>{runResult?.id === latestRun.id && runResult.reused ? "Open saved decision" : "View decision"} →</a>
                 </div>}
-                {decision?.resource && <button className="research-link" disabled={!!busy || !auth} title={auth ? "Requests $0.25 in devnet USDC" : "Unlock operator workspace to buy research"} onClick={() => act("Requesting quote review", { kind: "buy", id: agent.id, decision: decision.id, requestId: crypto.randomUUID() })}>Buy requested quote review · 0.25 USDC</button>}
+                {decision?.resource && <button className="research-link" disabled={!!busy} title={auth ? "Requests 0.25 devnet USDC" : "Simulates spending 0.25 USDC"} onClick={() => act("Requesting quote review", { kind: "buy", id: agent.id, decision: decision.id, requestId: crypto.randomUUID() })}>{auth ? "Buy quote review" : "Simulate quote review"} · 0.25 USDC</button>}
               </article>;
             })}</div>
           </section>
@@ -200,13 +266,13 @@ function DeskView() {
               {[...desk.decisions].reverse().map(d => <article id={"decision-" + d.id} key={d.id}><div className="entry-head"><strong>{desk.agents.find(a => a.id === d.agent)?.versions.find(v => v.number === d.version)?.name}</strong><span className="pill">{d.action}</span></div><small>{d.snapshot.symbol} · v{d.version} · {date(d.at)}</small><p>{d.reason} {d.policy}</p>{d.fill && <small>{d.fill.quantity} YES at {d.fill.price}¢ · {d.fill.fee}¢ simulated fee</small>}</article>)}
             </section>
             <section className="panel feed" id="research"><h2>Research payments</h2>
-              <p className="empty">AgentDesk operates the quote review service. Payments use devnet test USDC.</p>
-              {desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!auth || !!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
-              {[...desk.purchases].reverse().map(p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${p.status === "confirmed" ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}
-                {p.status === "confirmed" && p.after && p.after !== "hold" &&
+              <p className="empty">{auth ? "Verified quote reviews use Solana devnet test USDC." : "Simulated payments allow you to test budgets, review quotes, and apply paper orders."}</p>
+              {desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
+              {[...desk.purchases].reverse().map(p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}
+                {(p.status === "confirmed" || p.status === "simulated") && p.after && p.after !== "hold" &&
                   (desk.decisions.find(d => d.researchPurchase === p.id)
                     ? <p><a href={"#decision-" + desk.decisions.find(d => d.researchPurchase === p.id)?.id}>Applied paper decision</a></p>
-                    : <button className="quiet" disabled={!!busy || !auth} onClick={() => act("Applying paper recommendation", { kind: "apply-review", id: p.id })}>Apply as paper order</button>)}
+                    : <button className="quiet" disabled={!!busy} onClick={() => act("Applying paper recommendation", { kind: "apply-review", id: p.id })}>Apply as paper order</button>)}
                 {p.signature && <a href={`https://explorer.solana.com/tx/${p.signature}?cluster=devnet`} target="_blank" rel="noreferrer">View Solana devnet receipt ↗</a>}
                 {["uncertain","pending"].includes(p.status) && <button className="quiet" disabled={!!busy || !auth} onClick={() => act("Checking Solana", { kind: "reconcile", id: p.id })}>Check settlement</button>}</article>)}
             </section>
@@ -220,7 +286,7 @@ function DeskView() {
                 await voice.startSession({ signedUrl, connectionType: "websocket" });
               }
             })}>{talking ? (voice.isSpeaking ? "Speaking · End call" : "Listening · End call") : "◉ Start voice"}</button></div>
-            {!talking && (!auth || !voiceAvailable) && <small className="empty">{voiceAvailable ? "Unlock the operator workspace to use voice." : "ElevenLabs voice requires server configuration."}</small>}
+            {!talking && (!auth || !voiceAvailable) && <small className="empty">{auth ? "ElevenLabs voice requires server configuration." : "Text supervisor is available in the demo. Connect ElevenLabs in the operator workspace."}</small>}
             <div className="suggestions">{suggestions.map(s => <button className="quiet" key={s} disabled={!!busy} onClick={() => ask(s)}>{s}</button>)}</div>
             <div className="messages" aria-live="polite">{messages.map((m, i) => <article key={i}><strong>{m.question}</strong><p>{m.answer.split(/(\[(?:[0-9a-f]{8}-){1}[0-9a-f-]{27}\])/g).map((part, j) => {
               if (!part.startsWith("[") || !part.endsWith("]")) return part;

@@ -68,10 +68,10 @@ test("invalid model actions and extra arguments fail validation", () => {
   assert.equal(proposalSchema.safeParse({ action: "buy", reason: "Invalid", amount: 200 }).success, false);
 });
 
-test("anonymous spending, configuration confirmation and voice requests are rejected", async () => {
+test("anonymous Solana reconciliation and voice sessions are rejected", async () => {
   assert.equal(operator("Bearer wrong"), false);
   const id = crypto.randomUUID();
-  for (const body of [{ kind: "buy", id, decision: id, requestId: id }, { kind: "confirm", id }, { kind: "apply-review", id }, { kind: "voice" }]) {
+  for (const body of [{ kind: "reconcile", id }, { kind: "voice" }]) {
     const response = await POST(new NextRequest("http://localhost/api/desk", {
       method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
     }));
@@ -132,5 +132,45 @@ test("running an agent applies saved instructions and returns the original decis
     assert.equal(instructed.decision.fill.quantity, 5);
   } finally {
     await rm(".agentdesk/" + owner + ".json", { force: true });
+  }
+});
+
+test("a visitor can approve a simulated review and apply it exactly once without network calls", async t => {
+  const owner = crypto.randomUUID();
+  const { id, decision } = await transact(owner, desk => {
+    advance(desk);
+    const agent = desk.agents[2];
+    const snapshot = currentSnapshot(desk)!;
+    return { id: agent.id, decision: record(desk, agent, snapshot, recommendation(latest(agent), signal(desk, snapshot)), []).id };
+  });
+  const call = async (body: object, session = owner) => {
+    const response = await POST(new NextRequest("http://localhost/api/desk", {
+      method: "POST", body: JSON.stringify(body),
+      headers: { "content-type": "application/json", cookie: "agentdesk_session=" + session },
+    }));
+    return { status: response.status, ...(await response.json()) };
+  };
+  const outsider = crypto.randomUUID();
+  const network = t.mock.method(globalThis, "fetch", async () => { throw new Error("Demo must stay offline"); });
+  try {
+    const buy = () => call({ kind: "buy", id, decision, requestId: crypto.randomUUID() });
+    const blocked = await buy();
+    assert.equal(blocked.desk.purchases[0].status, "blocked");
+    assert.equal(blocked.desk.purchases[0].signature, undefined);
+    const proposal = await call({ kind: "propose", id, cap: PRICE, budget: 1_000_000 });
+    assert.equal((await call({ kind: "confirm", id: proposal.desk.changes[0].id }, outsider)).status, 400);
+    assert.equal((await call({ kind: "confirm", id: proposal.desk.changes[0].id })).status, 200);
+    const receipt = (await buy()).desk.purchases[1];
+    assert.equal(receipt.status, "simulated");
+    assert.equal(receipt.after, "buy");
+    assert.equal(receipt.signature, undefined);
+    assert.equal((await buy()).desk.purchases.length, 2);
+    assert.equal((await call({ kind: "apply-review", id: receipt.id }, outsider)).status, 400);
+    const result = await call({ kind: "apply-review", id: receipt.id });
+    assert.equal(result.decision.fill.quantity, 5);
+    assert.equal((await call({ kind: "apply-review", id: receipt.id })).reused, true);
+    assert.equal(network.mock.callCount(), 0);
+  } finally {
+    await Promise.all([owner, outsider].map(id => rm(".agentdesk/" + id + ".json", { force: true })));
   }
 });

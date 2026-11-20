@@ -33,7 +33,7 @@ export type Decision = {
 };
 export type Purchase = {
   id: string; agent: string; decision: string; amount: number; at: string;
-  status: "blocked" | "pending" | "confirmed" | "failed" | "uncertain";
+  status: "blocked" | "pending" | "confirmed" | "simulated" | "failed" | "uncertain";
   reason: string; before: Proposal["action"]; after?: Proposal["action"]; evidence?: string;
   recipient?: string; mint?: string; signature?: string; programs?: string[];
 };
@@ -116,11 +116,11 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: P
   return decision;
 }
 export function reserved(desk: Desk, agentId: string) {
-  return desk.purchases.filter(p => p.agent === agentId && ["pending", "confirmed", "uncertain"].includes(p.status))
+  return desk.purchases.filter(p => p.agent === agentId && ["pending", "confirmed", "simulated", "uncertain"].includes(p.status))
     .reduce((total, p) => total + p.amount, 0);
 }
 export function reserve(desk: Desk, agent: Agent, decision: Decision, id: string, enabled: boolean) {
-  const existing = desk.purchases.find(p => p.id === id || (p.agent === agent.id && p.decision === decision.id && ["pending","uncertain","confirmed"].includes(p.status)));
+  const existing = desk.purchases.find(p => p.id === id || (p.agent === agent.id && p.decision === decision.id && ["pending","uncertain","confirmed","simulated"].includes(p.status)));
   if (existing) return { purchase: existing, fresh: false };
   let reason = "";
   if (!latest(agent).active || !agent.resources.includes(RESOURCE)) reason = "Agent or resource is disabled.";
