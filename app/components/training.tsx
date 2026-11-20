@@ -1,3 +1,4 @@
+import { smoothPath } from "./market-chart";
 import { parseInstructions } from "../../lib/policy";
 import type { TrainingRecord } from "../../lib/training";
 
@@ -6,11 +7,12 @@ export function Sparkline({ values, label, baseline, accent = "#79ebbc" }: { val
   const all = [...values, ...(baseline ?? [])];
   const low = Math.min(...all);
   const range = Math.max(1, Math.max(...all) - low);
-  const points = (items: number[]) => items.map((value, index) =>
-    `${4 + index * 232 / Math.max(1, items.length - 1)},${51 - (value - low) * 46 / range}`).join(" ");
+  const path = (items: number[]) => smoothPath(items.map((value, index) => ({
+    x: 4 + index * 232 / Math.max(1, items.length - 1), y: 51 - (value - low) * 46 / range,
+  })));
   return <svg className="mini-chart" viewBox="0 0 240 56" role="img" aria-label={label} preserveAspectRatio="none">
-    {baseline && <polyline points={points(baseline)} fill="none" stroke="#a99ce9" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
-    <polyline points={points(values)} fill="none" stroke={accent} strokeWidth="1.7" vectorEffect="non-scaling-stroke" />
+    {baseline && <path d={path(baseline)} fill="none" stroke="#a99ce9" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
+    <path d={path(values)} fill="none" stroke={accent} strokeWidth="1.7" vectorEffect="non-scaling-stroke" />
   </svg>;
 }
 export function TrainingPanel({ training }: { training: TrainingRecord }) {

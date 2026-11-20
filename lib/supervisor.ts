@@ -15,7 +15,7 @@ export function answer(desk: Desk, question: string) {
     const simulated = purchases.filter(p => p.status === "simulated");
     const training = agent.training?.at(-1);
     const change = agent.versions.at(-2);
-    const updates = change ? (["name","strategy","instructions","threshold","positionLimit","markets","active"] as const)
+    const updates = change ? (["name","strategy","instructions","threshold","positionLimit","stopLossPct","markets","active"] as const)
       .filter(k => JSON.stringify(change[k]) !== JSON.stringify(config[k])).map(k => `${k}: ${change[k]} → ${config[k]}`).join(", ") : "";
     const overlaps = desk.agents.filter(other => other.id !== agent.id).flatMap(other =>
       Object.keys(agent.positions).filter(symbol => agent.positions[symbol] > 0 && (other.positions[symbol] ?? 0) > 0)

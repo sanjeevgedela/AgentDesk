@@ -111,3 +111,45 @@ test("an eligible training result promotes exactly once and preserves instructio
     assert.equal(agent.versions.length, 2);
   } finally { await rm(`.agentdesk/quotes-${symbol}.jsonl`, { force: true }); }
 });
+
+test("a bid below the cost-based stop overrides a buy and retains the basis on a partial exit", async () => {
+  const { positionMark } = await import("../lib/engine");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  const buy = { action: "buy" as const, reason: "Test signal" };
+  advance(desk);
+  const first = currentSnapshot(desk)!;
+  record(desk, agent, first, buy, []);
+  advance(desk);
+  const second = currentSnapshot(desk)!;
+  record(desk, agent, second, buy, []);
+  latest(agent).stopLossPct = 10;
+  const quote = { ...second, id: "stop-loss-exit", bid: 44, ask: 45, at: new Date(Date.parse(second.at) + 60_000).toISOString() };
+  desk.snapshots.push(quote);
+  assert.equal(positionMark(desk, agent, quote)?.entry, 50.5);
+  const result = record(desk, agent, quote, buy, []);
+  assert.equal(result.action, "sell");
+  assert.deepEqual(result.fill, { quantity: 5, price: 44, fee: 1 });
+  assert.equal(agent.positions[quote.symbol], 5);
+  assert.equal(agent.entryPrices?.[quote.symbol], 50.5);
+  assert.ok(result.tools.some(tool => tool.name === "stop_loss"));
+});
+
+test("stop-loss can recover a legacy fill basis and still obeys sell policy", async () => {
+  const { positionMark } = await import("../lib/engine");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  advance(desk);
+  const first = currentSnapshot(desk)!;
+  record(desk, agent, first, { action: "buy", reason: "Test entry" }, []);
+  delete agent.entryPrices;
+  latest(agent).stopLossPct = 10;
+  latest(agent).instructions = "min sell price: 42";
+  const quote = { ...first, id: "legacy-stop", bid: 40, ask: 41, at: new Date(Date.parse(first.at) + 60_000).toISOString() };
+  desk.snapshots.push(quote);
+  assert.equal(positionMark(desk, agent, quote)?.triggered, true);
+  const result = record(desk, agent, quote, { action: "hold", reason: "No signal" }, []);
+  assert.equal(result.fill, null);
+  assert.equal(result.validation?.at(-1)?.name, "policy");
+  assert.equal(agent.positions[quote.symbol], 5);
+});

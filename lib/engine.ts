@@ -17,10 +17,11 @@ export const configSchema = z.object({
   markets: z.array(z.string().regex(/^[\w-]+$/).max(120)).min(1).max(30),
   active: z.boolean(),
   auto: z.boolean().optional(),
+  stopLossPct: z.number().int().min(1).max(99).optional(),
 });
 export type Config = z.infer<typeof configSchema>;
 export type Version = Config & { number: number; at: string };
-export type Agent = { riskDay?: Partial<Record<Snapshot["mode"], { day: string; open: number }>>; training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
+export type Agent = { entryPrices?: Record<string, number>; riskDay?: Partial<Record<Snapshot["mode"], { day: string; open: number }>>; training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
 export type Snapshot = { id: string; symbol: string; title: string; bid: number; ask: number; at: string; source: string; mode: "replay" | "live" };
 export const proposalSchema = z.object({
   action: z.enum(["buy", "sell", "hold"]),
@@ -111,6 +112,32 @@ export function equity(desk: Desk, agent: Agent, asOf?: Snapshot) {
   }, 0);
 }
 
+export function positionMark(desk: Desk, agent: Agent, quote: Snapshot) {
+  const position = agent.positions[quote.symbol] ?? 0;
+  if (position === 0) return undefined;
+  const savedEntry = agent.entryPrices?.[quote.symbol];
+  let held = 0;
+  let average = 0;
+  if (savedEntry === undefined) {
+    for (const decision of desk.decisions) {
+      if (decision.agent !== agent.id || decision.snapshot.symbol !== quote.symbol || decision.snapshot.at > quote.at || !decision.fill) continue;
+      const { price, quantity } = decision.fill;
+      if (decision.action === "buy") {
+        average = (average * held + price * quantity) / (held + quantity);
+        held += quantity;
+      } else if (decision.action === "sell") {
+        held = Math.max(0, held - quantity);
+        if (!held) average = 0;
+      }
+    }
+  }
+  const entry = savedEntry ?? (held === position && average > 0 ? average : undefined);
+  if (entry === undefined) return undefined;
+  const stopLossPct = latest(agent).stopLossPct;
+  const stop = stopLossPct === undefined ? undefined : entry * (100 - stopLossPct) / 100;
+  return { entry, stop, triggered: stop !== undefined && quote.bid <= stop, unrealized: position * (quote.bid - entry) };
+}
+
 export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string, followUpOf?: string) {
   const config = latest(agent);
   if (followUpOf && desk.decisions.some(d => d.followUpOf === followUpOf)) throw new Error("A follow-up already exists.");
@@ -119,7 +146,11 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
     throw new Error("This strategy version already ran on this snapshot.");
   const rules = parseInstructions(config.instructions);
   const parsed = proposalSchema.safeParse(input);
-  const { proposal, reasons } = guard(parsed.success ? parsed.data : { action: "hold", reason: "Proposal failed strict validation." }, snapshot, rules);
+  const mark = positionMark(desk, agent, snapshot);
+  const stop = parsed.success && mark?.triggered ? `Stop-loss triggered at ${snapshot.bid}¢ bid (threshold ${mark.stop!.toFixed(2)}¢).` : undefined;
+  const selected = stop ? { action: "sell" as const, reason: stop } : parsed.success ? parsed.data : { action: "hold" as const, reason: "Proposal failed strict validation." };
+  const { proposal, reasons } = guard(selected, snapshot, rules);
+  if (stop) tools = [...tools, { name: "stop_loss", result: stop }];
   const maxQty = Math.min(5, rules.maxQty ?? 5);
   tools = [...tools, { name: "policy_guard", result: reasons.join(". ") || `Passed; max order quantity ${maxQty}.` }];
   const position = agent.positions[snapshot.symbol] ?? 0;
@@ -148,6 +179,14 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
   if (fill) {
     const delta = proposal.action === "buy" ? quantity : -quantity;
     agent.positions[snapshot.symbol] = position + delta;
+    const entries = agent.entryPrices ??= {};
+    if (proposal.action === "buy" && (!position || mark)) {
+      entries[snapshot.symbol] = ((mark?.entry ?? 0) * position + price * quantity) / (position + quantity);
+    } else if (position + delta === 0) {
+      delete entries[snapshot.symbol];
+    } else if (mark) {
+      entries[snapshot.symbol] = mark.entry;
+    }
     agent.cash -= delta * price + fee;
   }
   const policy = failed?.detail ?? (fill ? "Paper order filled at the observed quote."
@@ -212,6 +251,7 @@ export function resolve(desk: Desk, symbol: string, outcome: Settlement["outcome
     const cents = outcome === "yes" ? contracts * 100 : 0;
     agent.cash += cents;
     agent.positions[symbol] = 0;
+    if (agent.entryPrices) delete agent.entryPrices[symbol];
     payouts.push({ agent: agent.id, contracts, cents });
   }
   const settlement = { symbol, outcome, payouts, at, source };

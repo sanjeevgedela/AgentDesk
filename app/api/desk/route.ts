@@ -23,6 +23,7 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("demo-run") }),
   z.object({ kind: z.literal("resolve"), symbol: quoteSymbol, outcome: z.enum(["yes", "no"]) }),
   z.object({ kind: z.literal("train"), id: uuid, symbol: quoteSymbol.optional(), synthetic: z.boolean().optional() }),
+  z.object({ kind: z.literal("refresh-live") }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
   z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema }),
@@ -179,7 +180,13 @@ export async function POST(req: NextRequest) {
         return { desk };
       }));
     }
-    const live = input.kind === "mode" && input.mode === "live" ? await geminiSnapshots() : null;
+    const refreshTarget = input.kind === "refresh-live" ? await transact(owner, desk => {
+      const current = currentSnapshot(desk);
+      return current?.mode === "live" ? current : undefined;
+    }) : undefined;
+    if (input.kind === "refresh-live" && !refreshTarget) throw new Error("Switch to Live Gemini before refreshing.");
+    const live = refreshTarget || (input.kind === "mode" && input.mode === "live")
+      ? await geminiSnapshots(refreshTarget?.source.split("/").at(-1)) : null;
     if (live) await appendQuotes(live);
     if (input.kind === "run") {
       const original = await transact(owner, desk => {
@@ -228,6 +235,9 @@ export async function POST(req: NextRequest) {
           if (desk.mode !== "replay") throw new Error("Switch to replay before advancing.");
           advance(desk);
           break;
+        case "refresh-live":
+          if (desk.mode === "live" && live) keepRecentQuotes(desk, live);
+          return { desk, refreshed: !!live?.some(quote => quote.symbol === desk.selected) };
         case "mode":
           desk.mode = input.mode;
           if (live) {

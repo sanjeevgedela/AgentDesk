@@ -7,13 +7,13 @@ const contract = z.object({
 });
 const eventSchema = z.object({ title: z.string(), ticker: z.string(), contracts: z.array(z.unknown()) });
 
-export async function geminiSnapshots(): Promise<Snapshot[]> {
+export async function geminiSnapshots(preferredEvent?: string): Promise<Snapshot[]> {
   const endpoint = "https://api.gemini.com/v1/prediction-markets/events";
   const res = await fetch(endpoint + "?status=active&limit=25", { cache: "no-store", signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status}. Retry or choose Replay.`);
   const { data } = z.object({ data: z.array(eventSchema) }).parse(await res.json());
-  const tracked = (process.env.GEMINI_EVENT_TICKERS ?? "").split(",").map(ticker => ticker.trim())
-    .filter(ticker => /^[\w-]{1,120}$/.test(ticker)).slice(0, 10);
+  const tracked = [...new Set([preferredEvent ?? "", ...(process.env.GEMINI_EVENT_TICKERS ?? "").split(",")]
+    .map(ticker => ticker.trim()).filter(ticker => /^[\w-]{1,120}$/.test(ticker)))].slice(0, 10);
   const extras = await Promise.allSettled(tracked.map(async ticker => {
     const response = await fetch(endpoint + "/" + encodeURIComponent(ticker), { cache: "no-store", signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error("Tracked event unavailable.");
