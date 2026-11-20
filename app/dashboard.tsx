@@ -46,6 +46,7 @@ function DeskView() {
   const [unlock, setUnlock] = useState(false);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<{ question: string; answer: string }[]>([]);
+  const [transcript, setTranscript] = useState<{ role: "user" | "ai"; text: string }[]>([]);
 
   const visibleWorkspace = useRef({ token: "", revision: -1 });
   const request = useCallback(async (action?: Action, switchTo?: string): Promise<Payload> => {
@@ -108,6 +109,7 @@ function DeskView() {
   const requestRef = useRef(request);
   useEffect(() => { deskRef.current = desk; requestRef.current = request; });
   const voice = useConversation({
+    onMessage: ({ message, source }) => { if (message?.trim()) setTranscript(old => [...old.slice(-39), { role: source, text: message }]); },
     onError: (message: string) => setError(`ElevenLabs session error: ${message || "check microphone and agent setup."}`),
     onDisconnect: details => {
       if (details?.reason === "error") setError(`ElevenLabs call ended: ${details.message || "connection lost."}`);
@@ -447,18 +449,22 @@ function DeskView() {
             </section>
           </div>
           <section className="panel feed" id="supervisor"><div className="section-head"><div><h2>Supervisor</h2><p className="empty">Answers are generated from saved decisions, positions and research records.</p></div>
-            {auth && <button className="quiet" disabled={!!busy || (!talking && !voiceAvailable)} onClick={() => perform(talking ? "Ending call" : "Connecting ElevenLabs", async () => {
-              if (talking) await voice.endSession();
-              else {
+            <button className={talking ? "primary" : "quiet"} aria-label={talking ? "End voice call" : "Start voice call"} disabled={!!busy || (auth && !talking && !voiceAvailable)} onClick={() => {
+              if (!auth && !talking) { setUnlock(true); return; }
+              void perform(talking ? "Ending call" : "Connecting ElevenLabs", async () => {
+                if (talking) { voice.endSession(); return; }
                 if (!navigator.mediaDevices?.getUserMedia) throw new Error("Voice needs a secure (HTTPS or localhost) browser context with microphone support.");
                 try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); }
                 catch { throw new Error("Microphone access was denied. Allow it in the browser and try again."); }
                 const { signedUrl } = await request({ kind: "voice" });
                 if (!signedUrl) throw new Error("No signed session was returned.");
+                setTranscript([]);
                 voice.startSession({ signedUrl, connectionType: "websocket" });
-              }
-            })}>{talking ? (voice.isSpeaking ? "Speaking · End call" : "Listening · End call") : "◉ Start voice"}</button>}</div>
+              });
+            }}>{talking ? (voice.isSpeaking ? "🔊 Speaking · End call" : "🎤 Listening · End call") : "🎤 Talk to supervisor"}</button></div>
             {auth && !talking && !voiceAvailable && <small className="empty">ElevenLabs voice requires server configuration.</small>}
+            {!auth && <small className="empty">Voice requires operator access. Click the mic to unlock.</small>}
+            {(talking || transcript.length > 0) && <div className="messages" aria-live="polite">{transcript.map((t, i) => <article key={i}><strong>{t.role === "user" ? "You" : "Supervisor"}</strong><p>{t.text}</p></article>)}</div>}
             <div className="suggestions">{suggestions.map(s => <button className="quiet" key={s} disabled={!!busy} onClick={() => ask(s)}>{s}</button>)}</div>
             <div className="messages" aria-live="polite">{messages.map((m, i) => <article key={i}><strong>{m.question}</strong><p>{m.answer.split(/(\[(?:[0-9a-f]{8}-){1}[0-9a-f-]{27}\])/g).map((part, j) => {
               if (!part.startsWith("[") || !part.endsWith("]")) return part;
