@@ -1,4 +1,4 @@
-import { latest, recommendation, record, type Agent, type Desk, type Snapshot, type Proposal, type Version } from "./engine";
+import { RESOURCE, latest, recommendation, record, type Agent, type Config, type Desk, type Snapshot, type Proposal, type Version } from "./engine";
 import { predict } from "./fitted";
 import { evaluateInstructions } from "./instructions";
 import { parseInstructions } from "./policy";
@@ -16,6 +16,16 @@ export function evaluateRun(version: Version, snapshot: Snapshot, change: number
   };
 }
 
+export function forecastProposal(config: Pick<Config, "strategy" | "threshold">, change: number, horizon: number): Proposal {
+  const move = config.strategy === "Contrarian" ? -change : change;
+  const actionable = Math.abs(move) >= config.threshold;
+  return {
+    action: !actionable || config.strategy === "Evidence-driven" ? "hold" : move > 0 ? "buy" : "sell",
+    reason: `Ridge forecast ${change.toFixed(2)}¢ over ${horizon} observations.`,
+    resource: actionable && config.strategy === "Evidence-driven" ? RESOURCE : undefined,
+  };
+}
+
 export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string, stopOnly = false) {
   const version = latest(agent);
   const model = agent.fittedModels?.find(item => item.id === version.modelId);
@@ -28,10 +38,7 @@ export function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal
   if (!stopOnly && version.modelId && source !== "saved_instruction") {
     source = inference ? "fitted_model" : "model_unavailable";
     if (inference) {
-      const move = version.strategy === "Contrarian" ? -inference.change : inference.change;
-      const action = Math.abs(move) < version.threshold || version.strategy === "Evidence-driven" ? "hold" : move > 0 ? "buy" : "sell";
-      proposal = { action, reason: `Ridge forecast ${inference.change.toFixed(2)}¢ over ${inference.horizon} observations.`,
-        ...(version.strategy === "Evidence-driven" && Math.abs(move) >= version.threshold ? { resource: "spread-review" as const } : {}) };
+      proposal = forecastProposal(version, inference.change, inference.horizon);
     } else proposal = { action: "hold", reason: "The active model needs a matching market and a quote after its dataset cutoff." };
   }
   if (stopOnly) {

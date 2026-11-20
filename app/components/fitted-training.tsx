@@ -2,11 +2,13 @@
 
 import { useState, type FormEvent } from "react";
 import { featureNames, fitConfig, type FitConfig, type FittedModel } from "../../lib/fitted";
+import { BacktestInspector, TrainingChat } from "./backtest-inspector";
 import { Sparkline } from "./training";
 
-export function FittedTraining({ models, active, busy, canFit, operator, fit, activate }: {
+export function FittedTraining({ models, active, busy, canFit, operator, fit, activate, ask }: {
   models: FittedModel[]; active?: string; busy: boolean; canFit: boolean; operator: boolean;
   fit: (config: FitConfig, synthetic: boolean) => Promise<void>; activate: (id: string) => Promise<void>;
+  ask: (question: string, modelId?: string) => Promise<string>;
 }) {
   const [selection, setSelection] = useState("");
   const chosen = models.find(model => model.id === selection) ?? models.at(-1);
@@ -52,15 +54,17 @@ export function FittedTraining({ models, active, busy, canFit, operator, fit, ac
       </select></label>
       <small>{chosen.bars.length} observations · {chosen.bars[0].at} to {chosen.bars.at(-1)?.at}</small>
       <code className="data-hash" title="Dataset SHA-256">{chosen.datasetHash}</code>
+      {chosen.execution && <p>{chosen.execution.strategy} · {chosen.execution.threshold}¢ signal threshold · {chosen.execution.positionLimit}-contract position limit{chosen.execution.stopLossPct ? ` · ${chosen.execution.stopLossPct}% stop-loss` : ""}</p>}
       <p>Target: future midpoint change over {chosen.artifact.config.horizon} observations.</p>
       <p>Validation MAE {chosen.artifact.validation.mae.toFixed(2)}¢ · Final test MAE {chosen.artifact.test.mae.toFixed(2)}¢ · Zero-move test baseline {chosen.artifact.test.zeroMoveMae.toFixed(2)}¢</p>
       <p>Validation starts {chosen.artifact.split.validationFrom} · Test starts {chosen.artifact.split.testFrom}</p>
       {chosen.backtest && <><p>Held-out paper equity · {chosen.backtest.trades} fills · {chosen.backtest.pnl.toFixed(2)}¢ P&L · {chosen.backtest.fees}¢ fees</p>
-        <Sparkline values={chosen.backtest.equity} label="Held-out equity" />
+        {chosen.backtest.baseline && <p>Strategy rules without a fitted forecast · {chosen.backtest.baseline.pnl.toFixed(2)}¢ P&amp;L · {chosen.backtest.baseline.trades} fills · dashed line</p>}
+        <Sparkline values={chosen.backtest.equity} baseline={chosen.backtest.baseline?.equity} label="Held-out equity" />
         <p>Drawdown (¢)</p><Sparkline values={chosen.backtest.drawdown} label="Held-out drawdown" /></>}
       <details><summary>Inspect saved quotes and coefficients</summary>
         <a href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(chosen, null, 2))}`} download={`agentdesk-model-${chosen.id}.json`}>Download fitted artifact and dataset</a>
-        <pre className="data-hash">{JSON.stringify(chosen.bars.slice(0, 3), null, 2)}</pre>
+        <BacktestInspector key={chosen.id} model={chosen} />
       </details>
       {operator && <button className="quiet" disabled={busy || active === chosen.id} onClick={async () => {
         setError("");
@@ -70,5 +74,6 @@ export function FittedTraining({ models, active, busy, canFit, operator, fit, ac
         {active === chosen.id ? "Model active" : "Activate model"}
       </button>}
     </>}
+    <TrainingChat key={chosen?.id ?? "no-model"} modelId={chosen?.id} ask={ask} />
   </div>;
 }

@@ -35,21 +35,32 @@ try {
   await training.getByLabel("Dataset", { exact: true }).selectOption("synthetic");
   await training.getByRole("button", { name: "Fit forecast model" }).click();
   await training.getByText(/Final test MAE/).waitFor();
+  await training.getByText("Inspect saved quotes and coefficients", { exact: true }).click();
+  await training.getByRole("table").getByRole("columnheader", { name: "Bid", exact: true }).waitFor();
+  await training.getByRole("button", { name: "Next rows" }).click();
+  await training.getByText(/Page 2 of/).waitFor();
+  await training.getByLabel("Inspect backtest data").selectOption("decisions");
+  await training.getByRole("columnheader", { name: "Paper fill" }).waitFor();
+  const assistant = training.getByRole("region", { name: "Training assistant" });
+  await assistant.getByLabel("Training question").fill("Did the model beat the strategy baseline?");
+  await assistant.getByRole("button", { name: "Ask", exact: true }).click();
+  await assistant.getByText(/The same strategy without the forecast returned/).waitFor();
+
   await training.getByRole("button", { name: "Activate model" }).click();
   await training.getByRole("button", { name: "Model active" }).waitFor();
   const modelId = await training.getByLabel("Saved models").inputValue();
   const advance = page.getByRole("button", { name: "Next snapshot" });
   if (await advance.count() && await advance.isEnabled()) await advance.click();
   await card.getByRole("button", { name: "Run agent" }).click();
-  await page.locator("#activity").getByText(new RegExp("Model " + modelId)).waitFor();
-  await page.getByRole("textbox", { name: "Question" }).fill("What model is active for " + name + "?");
+  await page.locator("#activity article").filter({ hasText: name }).getByText(new RegExp("Model " + modelId)).waitFor();
+  await page.getByRole("textbox", { name: "Question", exact: true }).fill("What model is active for " + name + "?");
   await page.getByRole("button", { name: "Send" }).click();
-  await page.locator(".messages").getByText(new RegExp("Active fitted model \\[" + modelId)).waitFor();
+  await page.locator("#supervisor .messages").getByText(new RegExp("Active fitted model \\[" + modelId)).waitFor();
   await page.reload();
   await unlock();
   await page.getByLabel("Training agent").selectOption({ label: name });
   await training.getByRole("button", { name: "Model active" }).waitFor();
-  await page.locator("#activity").getByText(new RegExp("Model " + modelId)).waitFor();
+  await page.locator("#activity article").filter({ hasText: name }).getByText(new RegExp("Model " + modelId)).waitFor();
   assert.deepEqual(errors, []);
   console.log("Verified live history status; created agent, fitted and activated synthetic model, ran recorded inference, asked supervisor, and verified persistence after reload.");
 } finally { await browser.close(); }

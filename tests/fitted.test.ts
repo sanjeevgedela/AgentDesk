@@ -41,3 +41,28 @@ test("saved fit survives reload and the selected version changes numerical infer
   assert.ok(response.includes(second.datasetHash));
   assert.ok(response.includes(runB.id) && response.includes(quote.at));
 });
+
+test("fitted replay records real strategy decisions and a matched baseline", async () => {
+  const { forecastProposal } = await import("../lib/runner");
+  const { answerTraining } = await import("../lib/training-answers");
+  const desk = newDesk();
+  const symbol = currentSnapshot(desk)!.symbol;
+  assert.equal(forecastProposal(latest(desk.agents[0]), 6, 1).action, "buy");
+  assert.equal(forecastProposal(latest(desk.agents[1]), 6, 1).action, "sell");
+  assert.equal(forecastProposal(latest(desk.agents[2]), 6, 1).resource, "spread-review");
+  for (const agent of desk.agents) {
+    const model = await fitAgent(agent, symbol, true, config);
+    const replay = model.backtest!;
+    assert.ok(replay.rows?.length);
+    assert.equal(replay.rows.filter(row => row.fill).length, replay.trades);
+    assert.equal(replay.rows.reduce((sum, row) => sum + (row.fill?.fee ?? 0), 0), replay.fees);
+    assert.equal(replay.rows.at(-1)!.equity, replay.equity.at(-1));
+    assert.equal(replay.rows[0].at, model.artifact.split.testFrom);
+    assert.equal(replay.baseline?.equity.length, replay.rows.length);
+    const reply = answerTraining(agent, model.id, "What was the dataset and how did the baseline perform?");
+    assert.ok(reply.includes(model.datasetHash));
+    assert.match(reply, /SYNTHETIC/);
+    assert.match(reply, /same strategy without the forecast/);
+  }
+  assert.match(answerTraining(newDesk().agents[0], undefined, "How did it do?"), /No saved fitted model/);
+});

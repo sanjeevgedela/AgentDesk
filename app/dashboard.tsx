@@ -370,6 +370,10 @@ function DeskView() {
                 try { await request({ kind: "fit", id: selectedTrainingAgent.id, symbol: snapshot.symbol, synthetic, config }); }
                 finally { setBusy(""); }
               }}
+              ask={async (question, modelId) => {
+                const result = await request({ kind: "ask-training", id: selectedTrainingAgent.id, question, modelId });
+                return result.answer ?? "No training answer is available.";
+              }}
               activate={async modelId => {
                 setBusy("Activating fitted model");
                 try { await request({ kind: "activate-model", id: selectedTrainingAgent.id, modelId }); }

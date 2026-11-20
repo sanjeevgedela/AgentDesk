@@ -16,6 +16,7 @@ import { applyReview, completeReview, researchFor } from "../../../lib/research"
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
 import { operator, transact } from "../../../lib/store";
+import { answerTraining } from "../../../lib/training-answers";
 import { answer } from "../../../lib/supervisor";
 
 const uuid = z.uuid();
@@ -32,6 +33,7 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
   z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema }),
   z.object({ kind: z.literal("run"), id: uuid }),
+  z.object({ kind: z.literal("ask-training"), id: uuid, modelId: z.string().regex(/^[0-9a-f]{20}$/).optional(), question: z.string().trim().min(1).max(600) }),
   z.object({ kind: z.literal("ask"), question: z.string().trim().min(1).max(600) }),
   z.object({ kind: z.literal("propose"), id: uuid, cap: amount, budget: amount }),
   z.object({ kind: z.literal("confirm"), id: uuid }),
@@ -281,6 +283,7 @@ export async function POST(req: NextRequest) {
             saveVersion(agent, input.config);
           }
           break;
+        case "ask-training": return { answer: answerTraining(agentFor(desk, input.id), input.modelId, input.question) };
         case "ask": return { answer: answer(desk, input.question) };
         case "propose": {
           agentFor(desk, input.id);

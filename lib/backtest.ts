@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { INITIAL_CASH, newDesk, record, type Config, type Snapshot } from "./engine";
+import { INITIAL_CASH, newDesk, record, type Config, type Decision, type Proposal, type Snapshot } from "./engine";
 import { evaluateRun } from "./runner";
 
 export type Bar = { bid: number; ask: number; at: string };
@@ -38,7 +38,10 @@ export function metrics(equity: number[], trades: number, fees: number) {
   const deviation = Math.sqrt(returns.reduce((total, item) => total + (item - mean) ** 2, 0) / Math.max(1, returns.length));
   return { pnl, maxDrawdown, trades, fees, sharpe: deviation ? mean / deviation : 0, returns };
 }
-export function simulate(bars: Bar[], config: Config, slippageCents = 0, choose?: (i: number) => "buy" | "sell" | "hold") {
+export type BacktestRow = { at: string; equity: number; position: number; cash: number; action: Proposal["action"];
+  fill: Decision["fill"]; reason: string; policy: string; researchRequested: boolean };
+
+export function simulate(bars: Bar[], config: Config, slippageCents = 0, choose?: (i: number) => Proposal | Proposal["action"], trace = false) {
   const desk = newDesk();
   const agent = desk.agents[0];
   const symbol = "BACKTEST";
@@ -46,6 +49,7 @@ export function simulate(bars: Bar[], config: Config, slippageCents = 0, choose?
   desk.snapshots = [];
   const equity: number[] = [];
   const actions: string[] = [];
+  const rows: BacktestRow[] = [];
   let trades = 0;
   let fees = 0;
   for (const [i, bar] of bars.entries()) {
@@ -53,14 +57,20 @@ export function simulate(bars: Bar[], config: Config, slippageCents = 0, choose?
     const change = i > 0 ? (bar.bid + bar.ask - bars[i - 1].bid - bars[i - 1].ask) / 2 : null;
     const quote = { ...observation, bid: Math.max(0, bar.bid - slippageCents), ask: Math.min(100, bar.ask + slippageCents) };
     desk.snapshots = i ? [{ ...observation, ...bars[i - 1], id: String(i - 1) }, observation] : [observation];
-    const proposal = choose ? { action: choose(i), reason: "Evaluation baseline" } : evaluateRun(agent.versions[0], observation, change).proposal;
+    const selected = choose?.(i);
+    const proposal = typeof selected === "string" ? { action: selected, reason: "Evaluation baseline" }
+      : selected ?? evaluateRun(agent.versions[0], observation, change).proposal;
     const decision = record(desk, agent, quote, proposal, []);
     desk.decisions = [];
     actions.push(decision.action);
     if (decision.fill) { trades++; fees += decision.fill.fee; }
-    equity.push(agent.cash + (agent.positions[symbol] ?? 0) * (bar.bid + bar.ask) / 2);
+    const position = agent.positions[symbol] ?? 0;
+    const value = agent.cash + position * (bar.bid + bar.ask) / 2;
+    equity.push(value);
+    if (trace) rows.push({ at: bar.at, equity: value, position, cash: agent.cash, action: decision.action, fill: decision.fill,
+      reason: decision.reason, policy: decision.policy, researchRequested: !!decision.resource });
   }
-  return { ...metrics(equity, trades, fees), actions, equity };
+  return { ...metrics(equity, trades, fees), actions, equity, rows };
 }
 export function confidence(deltas: number[], seed: number, block = 1): [number, number] {
   if (!deltas.length) return [0, 0];

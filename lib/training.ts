@@ -2,6 +2,8 @@ import { fitForecast, predict, type FitConfig, type FittedModel } from "./fitted
 import { sha256 } from "./canonical";
 import { datasetHash, simulate, syntheticSeries, train, type TrainReport } from "./backtest";
 import { latest, saveVersion, type Agent } from "./engine";
+import { evaluateInstructions } from "./instructions";
+import { forecastProposal } from "./runner";
 import { loadBars } from "./history";
 
 export type TrainingRecord = {
@@ -40,7 +42,7 @@ export async function fitAgent(agent: Agent, symbol: string, synthetic: boolean,
   const datasetHash = sha256({ symbol, synthetic, bars });
   const execution = { strategy: version.strategy, threshold: version.threshold, positionLimit: version.positionLimit,
     stopLossPct: version.stopLossPct, instructions: version.instructions };
-  const id = sha256({ datasetHash, config, execution }).slice(0, 20);
+  const id = sha256({ datasetHash, config, execution, replayVersion: 1 }).slice(0, 20);
   const existing = agent.fittedModels?.find(model => model.id === id);
   if (existing) return existing;
   if ((agent.fittedModels?.length ?? 0) >= 20) throw new Error("This agent has reached 20 saved model artifacts.");
@@ -50,16 +52,18 @@ export async function fitAgent(agent: Agent, symbol: string, synthetic: boolean,
   };
   const heldOut = bars.filter(bar => bar.at >= model.artifact.split.testFrom);
   const test = simulate(heldOut, version, 1, i => {
-    if (!i || version.strategy === "Evidence-driven") return "hold";
+    if (!i) return { action: "hold", reason: "A prior held-out quote is required." };
     const observations = [heldOut[i], heldOut[i - 1]].map((bar, j) => ({
       ...bar, id: String(j), symbol, mode: "replay" as const, title: symbol, source: "Held-out quote",
     }));
+    const instruction = evaluateInstructions(version.instructions, observations[0]).matched;
     const forecast = predict(model.artifact, observations[0], observations[1]);
-    const change = version.strategy === "Contrarian" ? -forecast : forecast;
-    return Math.abs(change) < version.threshold ? "hold" : change > 0 ? "buy" : "sell";
-  });
+    return instruction ?? forecastProposal(version, forecast, config.horizon);
+  }, true);
+  const baseline = simulate(heldOut, version, 1);
   let peak = 100_000;
-  model.backtest = { equity: test.equity, pnl: test.pnl, fees: test.fees, trades: test.trades,
+  model.backtest = { equity: test.equity, pnl: test.pnl, fees: test.fees, trades: test.trades, rows: test.rows, slippage: 1,
+    baseline: { pnl: baseline.pnl, trades: baseline.trades, equity: baseline.equity },
     drawdown: test.equity.map(value => { peak = Math.max(peak, value); return peak - value; }) };
   (agent.fittedModels ??= []).push(model);
   return model;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Bar } from "./backtest";
+import type { BacktestRow, Bar } from "./backtest";
 import type { Config, Snapshot } from "./engine";
 
 export const featureNames = ["midpoint", "spread", "last_move"] as const;
@@ -63,7 +63,7 @@ export type Forecast = ReturnType<typeof fitForecast>;
 export type FittedModel = {
   id: string; createdAt: string; symbol: string; synthetic: boolean; datasetHash: string;
   execution?: Pick<Config, "strategy" | "threshold" | "positionLimit" | "stopLossPct" | "instructions">;
-  bars: Bar[]; artifact: Forecast; backtest?: { equity: number[]; drawdown: number[]; pnl: number; fees: number; trades: number };
+  bars: Bar[]; artifact: Forecast; backtest?: { equity: number[]; drawdown: number[]; pnl: number; fees: number; trades: number; slippage?: number; rows?: BacktestRow[]; baseline?: { pnl: number; trades: number; equity: number[] } };
 };
 
 export function predict(artifact: Forecast, quote: Snapshot, previous: Snapshot) {
