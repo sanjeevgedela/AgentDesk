@@ -22,3 +22,16 @@ export async function geminiSnapshots(): Promise<Snapshot[]> {
   if (!snapshots.length) throw new Error("Gemini returned no open contracts with usable quotes.");
   return snapshots.slice(0, 25);
 }
+
+export async function geminiResolutions() {
+  const endpoint = "https://api.gemini.com/v1/prediction-markets/events?status=settled&limit=50";
+  const response = await fetch(endpoint, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error("Settled Gemini events are unavailable.");
+  const result = z.object({ data: z.array(z.object({ contracts: z.array(z.unknown()) })) }).parse(await response.json());
+  const settled = z.object({ instrumentSymbol: z.string().min(1), status: z.literal("settled"),
+    resolutionSide: z.enum(["yes", "no"]), resolvedAt: z.iso.datetime() });
+  return result.data.flatMap(event => event.contracts.flatMap(raw => {
+    const record = settled.safeParse(raw);
+    return record.success && Date.parse(record.data.resolvedAt) <= Date.now() ? [record.data] : [];
+  }));
+}

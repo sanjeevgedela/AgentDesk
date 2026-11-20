@@ -48,7 +48,9 @@ export type Purchase = {
   recipient?: string; mint?: string; signature?: string; programs?: string[];
 };
 export type BudgetChange = { id: string; agent: string; cap: number; budget: number; expires: number };
+export type Settlement = { symbol: string; outcome: "yes" | "no"; at: string; source?: string; payouts: { agent: string; contracts: number; cents: number }[] };
 export type Desk = {
+  settlements?: Settlement[];
   agents: Agent[]; snapshots: Snapshot[]; decisions: Decision[]; purchases: Purchase[];
   lastTick?: number;
   changes: BudgetChange[]; replay: number; mode: Snapshot["mode"]; selected: string;
@@ -130,7 +132,8 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
   const previous = agent.riskDay?.[snapshot.mode];
   const open = previous?.day === day ? previous.open : before;
   if (!previous || day >= previous.day) agent.riskDay = { ...agent.riskDay, [snapshot.mode]: { day, open } };
-  const risk = snapshot.mode === "live" && Date.now() - Date.parse(snapshot.at) > 900_000 ? "Live quote is older than 15 minutes."
+  const risk = desk.settlements?.some(settlement => settlement.symbol === snapshot.symbol) ? "Market already resolved."
+    : snapshot.mode === "live" && Date.now() - Date.parse(snapshot.at) > 900_000 ? "Live quote is older than 15 minutes."
     : proposal.action === "buy" && before < open * .90 ? "Daily loss circuit breaker blocked this buy."
     : quantity > 0 && quantity * price > before * .05 ? "Order notional exceeds 5% of paper equity."
     : undefined;
@@ -189,4 +192,37 @@ export function keepRecentQuotes(desk: Desk, snapshots: Snapshot[]) {
     counts.set(key, count);
     return count <= 50;
   }).reverse();
+}
+
+export function resolve(desk: Desk, symbol: string, outcome: Settlement["outcome"], at = new Date().toISOString(), source = "Operator") {
+  const existing = desk.settlements?.find(entry => entry.symbol === symbol);
+  if (existing) {
+    if (existing.outcome !== outcome) throw new Error("The market already has a different recorded outcome.");
+    return existing;
+  }
+  const payouts: Settlement["payouts"] = [];
+  for (const agent of desk.agents) {
+    const contracts = agent.positions[symbol] ?? 0;
+    if (!contracts) continue;
+    const cents = outcome === "yes" ? contracts * 100 : 0;
+    agent.cash += cents;
+    agent.positions[symbol] = 0;
+    payouts.push({ agent: agent.id, contracts, cents });
+  }
+  const settlement = { symbol, outcome, payouts, at, source };
+  (desk.settlements ??= []).push(settlement);
+  return settlement;
+}
+
+export function agentStats(desk: Desk, agent: Agent) {
+  const decisions = desk.decisions.filter(decision => decision.agent === agent.id);
+  const marks = decisions.flatMap(decision => decision.equityAfter === undefined ? [] : [{ at: decision.at, equity: decision.equityAfter }]);
+  const current = equity(desk, agent);
+  let peak = INITIAL_CASH;
+  let maxDrawdown = 0;
+  for (const value of [...marks.map(mark => mark.equity), current]) {
+    peak = Math.max(value, peak);
+    maxDrawdown = Math.max(maxDrawdown, peak - value);
+  }
+  return { equity: current, pnl: current - INITIAL_CASH, maxDrawdown, trades: decisions.filter(decision => decision.fill).length, marks };
 }

@@ -2,7 +2,8 @@ import { after } from "next/server";
 import { processAnchors } from "../../../lib/anchor-queue";
 import { runAutopilot } from "../../../lib/autopilot";
 import { NextRequest, NextResponse } from "next/server";
-import { geminiSnapshots } from "../../../lib/gemini";
+import { resolve } from "../../../lib/engine";
+import { geminiSnapshots, geminiResolutions } from "../../../lib/gemini";
 import { appendQuotes } from "../../../lib/history";
 import { matchesBearer, operator, transact } from "../../../lib/store";
 
@@ -18,11 +19,17 @@ export async function GET(request: NextRequest) {
       return true;
     });
     if (!accepted) return NextResponse.json({ skipped: true });
-    const quotes = await geminiSnapshots();
+    const [quotes, resolutions] = await Promise.all([geminiSnapshots(), geminiResolutions().catch(() => null)]);
     const inserted = await appendQuotes(quotes);
+    const settled = resolutions ? await transact("operator", desk => {
+      const held = new Set(desk.agents.flatMap(agent => Object.keys(agent.positions).filter(symbol => agent.positions[symbol] > 0)));
+      const matches = resolutions.filter(entry => held.has(entry.instrumentSymbol) && !desk.settlements?.some(saved => saved.symbol === entry.instrumentSymbol));
+      for (const entry of matches) resolve(desk, entry.instrumentSymbol, entry.resolutionSide, entry.resolvedAt, "Gemini Prediction Markets");
+      return matches.length;
+    }) : null;
     const runs = await runAutopilot(quotes);
     after(async () => { await processAnchors(); });
-    return NextResponse.json({ fetched: quotes.length, inserted, runs });
+    return NextResponse.json({ fetched: quotes.length, inserted, runs, settled });
   } catch {
     return NextResponse.json({ error: "Quote collection unavailable." }, { status: 502 });
   }

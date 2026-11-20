@@ -1,8 +1,8 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  advance, configSchema, currentSnapshot, keepRecentQuotes, latest, newAgent, recommendation, record,
-  REPLAY_SYMBOL, reserve, reserved, saveVersion, signal, type Agent, type Desk, type Snapshot, type Proposal,
+  advance, agentStats, configSchema, currentSnapshot, keepRecentQuotes, latest, newAgent, recommendation, record,
+  REPLAY_SYMBOL, reserve, reserved, resolve, saveVersion, signal, type Agent, type Desk, type Snapshot, type Proposal,
 } from "../../../lib/engine";
 import { trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
@@ -21,6 +21,7 @@ const amount = z.number().int().min(0).max(10_000_000);
 const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("advance") }),
   z.object({ kind: z.literal("demo-run") }),
+  z.object({ kind: z.literal("resolve"), symbol: quoteSymbol, outcome: z.enum(["yes", "no"]) }),
   z.object({ kind: z.literal("train"), id: uuid, symbol: quoteSymbol.optional(), synthetic: z.boolean().optional() }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
@@ -59,7 +60,8 @@ export async function GET(req: NextRequest) {
   const { auth, owner, reply } = scope(req);
   if (req.headers.has("authorization") && !auth) return reply({ error: "Operator token rejected." }, 401);
   try {
-    return reply({ desk: await transact(owner, desk => desk), auth, operatorAccess: process.env.AGENTDESK_SHOW_OPERATOR_ACCESS === "true", model: auth && !!process.env.OPENAI_API_KEY, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
+    const desk = await transact(owner, desk => desk);
+    return reply({ desk, performance: Object.fromEntries(desk.agents.map(agent => [agent.id, agentStats(desk, agent)])), auth, operatorAccess: process.env.AGENTDESK_SHOW_OPERATOR_ACCESS === "true", model: auth && !!process.env.OPENAI_API_KEY, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
   } catch { return reply({ error: "Workspace storage is unavailable. Check database setup." }, 503); }
 }
 
@@ -70,7 +72,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["reconcile", "voice", "propose", "confirm", "train"].includes(input.kind) && !auth)
+  if (["reconcile", "voice", "propose", "confirm", "train", "resolve"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -233,6 +235,11 @@ export async function POST(req: NextRequest) {
         case "select":
           if (!desk.snapshots.some(s => s.symbol === input.symbol && s.mode === desk.mode)) throw new Error("Market is unavailable.");
           desk.selected = input.symbol;
+          break;
+        case "resolve":
+          if (!desk.snapshots.some(quote => quote.symbol === input.symbol) && !desk.decisions.some(decision => decision.snapshot.symbol === input.symbol))
+            throw new Error("No recorded market with that symbol.");
+          resolve(desk, input.symbol, input.outcome);
           break;
         case "train":
           return trainAgent(agentFor(desk, input.id), input.symbol ?? desk.selected, input.synthetic).then(training => ({ desk, training }));

@@ -57,3 +57,18 @@ test("daily loss circuit breaker rejects a buy", () => {
   assert.equal(decision.validation?.at(-1)?.name, "risk");
   assert.match(decision.policy, /circuit breaker/);
 });
+
+test("paper resolution pays YES at 100 cents and cannot pay twice", async () => {
+  const { resolve } = await import("../lib/engine");
+  const desk = newDesk();
+  const agent = desk.agents[0];
+  advance(desk);
+  const quote = currentSnapshot(desk)!;
+  record(desk, agent, quote, { action: "buy", reason: "Test buy" }, []);
+  const before = agent.cash;
+  assert.equal(resolve(desk, quote.symbol, "yes").payouts[0].cents, 500);
+  assert.equal(resolve(desk, quote.symbol, "yes").payouts[0].cents, 500);
+  assert.equal(agent.cash, before + 500);
+  assert.equal(agent.positions[quote.symbol], 0);
+  assert.throws(() => resolve(desk, quote.symbol, "no"), /different recorded outcome/);
+});
