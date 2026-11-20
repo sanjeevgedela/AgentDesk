@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["reconcile", "propose", "confirm", "train", "fit", "activate-model", "resolve"].includes(input.kind) && !auth)
+  if (input.kind === "reconcile" && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {

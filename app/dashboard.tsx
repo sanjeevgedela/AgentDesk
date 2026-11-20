@@ -15,6 +15,7 @@ const LIVE_REFRESH_MS = 500;
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const historySchema = z.object({ backfill: z.object({ status: z.enum(["available", "unavailable", "empty"]), source: z.string(), points: z.array(z.object({ at: z.iso.datetime(), cents: z.number() })) }).optional(), bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
+const VOICE_TOOLS = ["describe_screen", "navigate", "set_mode", "advance_replay", "refresh_quotes", "select_market", "run_agents", "guided_demo", "create_agent", "update_agent", "request_quote_review", "apply_review", "train_agent", "fit_model", "activate_model", "propose_budget", "confirm_budget", "ask_training", "desk_query"];
 const suggestions = ["Why did the agents disagree?", "How much research did each agent buy?", "What changed between strategy versions?"];
 
 export default function Dashboard() {
@@ -104,33 +105,20 @@ function DeskView() {
     }
   }
 
-  // Client tools are registered once per session, so read the latest desk and request through refs.
+  // Client tools are registered once per session, so they call the latest implementation through a ref.
   const deskRef = useRef<Desk>(undefined);
-  const requestRef = useRef(request);
-  const authRef = useRef(auth);
-  useEffect(() => { deskRef.current = desk; requestRef.current = request; authRef.current = auth; });
+  const toolRef = useRef<(name: string, args: Record<string, unknown>) => Promise<string>>(async () => "Not ready.");
+  const runTool = (name: string) => async (args: Record<string, unknown> = {}) => {
+    try { return await toolRef.current(name, args ?? {}); }
+    catch (err) { return `That did not work: ${err instanceof Error ? err.message : "request failed."}`; }
+  };
   const voice = useConversation({
     onMessage: ({ message, source }) => { if (message?.trim()) setTranscript(old => [...old.slice(-39), { role: source, text: message }]); },
     onError: (message: string) => setError(`ElevenLabs session error: ${message || "check microphone and agent setup."}`),
     onDisconnect: details => {
       if (details?.reason === "error") setError(`ElevenLabs call ended: ${details.message || "connection lost."}`);
     },
-    clientTools: {
-      // Tool failures are returned as text so the voice agent can explain them instead of going silent.
-      desk_query: async ({ question }: { question: string }) => {
-        try { return (await requestRef.current({ kind: "ask", question: String(question ?? "").slice(0, 600) })).answer ?? "No records."; }
-        catch (err) { return "AgentDesk could not read the records: " + (err instanceof Error ? err.message : "request failed."); }
-      },
-      propose_budget: async ({ agent_name, per_purchase_usdc, total_usdc }: { agent_name: string; per_purchase_usdc: number; total_usdc: number }) => {
-        try {
-          if (!authRef.current) return "Budget changes need operator access. The demo simulates research payments with no spending limits.";
-          const agent = deskRef.current?.agents.find(a => latest(a).name.toLowerCase() === String(agent_name).trim().toLowerCase());
-          if (!agent) return "Agent name not found. Known agents: " + (deskRef.current?.agents.map(a => latest(a).name).join(", ") || "none") + ".";
-          await requestRef.current({ kind: "propose", id: agent.id, cap: Math.round(Number(per_purchase_usdc) * 1_000_000), budget: Math.round(Number(total_usdc) * 1_000_000) });
-          return "Proposal displayed. The operator must confirm it in AgentDesk.";
-        } catch (err) { return "The proposal was rejected: " + (err instanceof Error ? err.message : "invalid limits."); }
-      },
-    },
+    clientTools: Object.fromEntries(VOICE_TOOLS.map(name => [name, runTool(name)])),
   });
   const talking = voice.status === "connected";
   const snapshot = desk && currentSnapshot(desk);
@@ -243,6 +231,128 @@ function DeskView() {
       setMessages(old => [...old, { question: text, answer: response.answer ?? "No matching records." }]);
     });
   }
+
+  const SECTIONS = ["overview", "agents", "training", "activity", "research", "supervisor"];
+  useEffect(() => {
+    deskRef.current = desk;
+    toolRef.current = async (name, args) => {
+      const text = (key: string) => String(args[key] ?? "").trim();
+      const current = deskRef.current;
+      const agentNamed = (raw: string) => {
+        const wanted = raw.trim().toLowerCase();
+        const agent = current?.agents.find(a => latest(a).name.toLowerCase() === wanted) ?? current?.agents.find(a => wanted && latest(a).name.toLowerCase().includes(wanted));
+        if (!agent) throw new Error(`Agent "${raw}" not found. Known agents: ${current?.agents.map(a => latest(a).name).join(", ") || "none"}.`);
+        return agent;
+      };
+      const num = (key: string) => args[key] === undefined || args[key] === null || args[key] === "" ? undefined : Number(args[key]);
+      switch (name) {
+        case "describe_screen": {
+          if (!current) return "The workspace is still loading.";
+          const mark = currentSnapshot(current);
+          return `Mode ${current.mode}. Selected market ${current.selected}${mark ? ` (bid ${mark.bid}¢, ask ${mark.ask}¢)` : ""}. Replay step ${current.replay} of 5. Agents: ${current.agents.map(a => `${latest(a).name} (${latest(a).strategy}, ${latest(a).active ? "active" : "paused"})`).join(", ") || "none"}. ${current.decisions.length} decisions, ${current.purchases.length} research purchases, ${current.changes.length} pending budget changes.`;
+        }
+        case "navigate": {
+          const section = text("section").toLowerCase().replace("decisions", "activity");
+          if (!SECTIONS.includes(section)) throw new Error("Sections: " + SECTIONS.join(", ") + ".");
+          location.hash = section;
+          return `Showing ${section}.`;
+        }
+        case "set_mode": {
+          const mode = text("mode").toLowerCase();
+          if (mode !== "replay" && mode !== "live") throw new Error("Mode must be replay or live.");
+          await request({ kind: "mode", mode });
+          return `Switched to ${mode} mode.`;
+        }
+        case "advance_replay": await request({ kind: "advance" }); return "Advanced the replay to the next snapshot.";
+        case "refresh_quotes": await refreshQuotes(true); return "Refreshed live quotes.";
+        case "select_market": {
+          const wanted = text("market").toLowerCase();
+          const match = markets.find(m => m.symbol.toLowerCase() === wanted) ?? markets.find(m => `${m.symbol} ${m.title}`.toLowerCase().includes(wanted));
+          if (!match) throw new Error("Market not found. Available: " + markets.slice(0, 8).map(m => m.symbol).join(", ") + ".");
+          await request({ kind: "select", symbol: match.symbol });
+          return `Selected ${match.symbol}.`;
+        }
+        case "run_agents": {
+          const who = text("agent_name").toLowerCase();
+          const targets = !who || who === "all" ? (current?.agents.filter(a => latest(a).active) ?? []) : [agentNamed(who)];
+          if (!targets.length) return "No active agents to run.";
+          const lines: string[] = [];
+          for (const agent of targets) {
+            const result = await request({ kind: "run", id: agent.id });
+            if (result.decision) { setRunResult({ id: result.decision.id, reused: !!result.reused }); lines.push(`${latest(agent).name}: ${result.decision.action}. ${result.decision.reason}`); }
+          }
+          return lines.join("\n") || "No decisions returned.";
+        }
+        case "guided_demo": await nextDemoStep(); return "Advanced the guided demo.";
+        case "create_agent": {
+          const strategy = strategies.find(item => item.toLowerCase() === text("strategy").toLowerCase()) ?? "Momentum";
+          const market = snapshot?.symbol ?? current?.selected;
+          await request({ kind: "save", config: { name: text("name") || "New agent", strategy, instructions: text("instructions"), threshold: num("threshold") ?? 3, positionLimit: num("position_limit") ?? 10, markets: market ? [market] : undefined, active: true } });
+          return `Created ${text("name") || "New agent"} using ${strategy}.`;
+        }
+        case "update_agent": {
+          const agent = agentNamed(text("agent_name"));
+          const base = latest(agent);
+          const strategy = strategies.find(item => item.toLowerCase() === text("strategy").toLowerCase()) ?? base.strategy;
+          const market = text("add_market");
+          const config = { name: text("new_name") || base.name, strategy, instructions: args.instructions === undefined ? base.instructions : text("instructions"),
+            threshold: num("threshold") ?? base.threshold, positionLimit: num("position_limit") ?? base.positionLimit,
+            stopLossPct: args.stop_loss_pct === undefined ? base.stopLossPct : (num("stop_loss_pct") || undefined),
+            auto: typeof args.auto === "boolean" ? args.auto : base.auto, active: typeof args.active === "boolean" ? args.active : base.active,
+            markets: market ? [...new Set([...base.markets, market])] : undefined };
+          await request({ kind: "save", id: agent.id, config });
+          return `Updated ${base.name}.`;
+        }
+        case "request_quote_review": {
+          const agent = agentNamed(text("agent_name"));
+          const decision = current?.decisions.findLast(d => d.agent === agent.id && d.resource && d.snapshot.id === snapshot?.id);
+          if (!decision) throw new Error(`${latest(agent).name} has no review request for the current quote. Run that agent first, and note only Evidence-driven agents request reviews.`);
+          await request({ kind: "buy", id: agent.id, decision: decision.id, requestId: crypto.randomUUID() });
+          return "Quote review purchased with simulated test USDC.";
+        }
+        case "apply_review": {
+          const agent = agentNamed(text("agent_name"));
+          const purchase = current?.purchases.findLast(p => p.agent === agent.id && p.status === (auth ? "confirmed" : "simulated") && p.after && p.after !== "hold");
+          if (!purchase) throw new Error("No completed review with a buy or sell recommendation to apply.");
+          await request({ kind: "apply-review", id: purchase.id });
+          return "Applied the review recommendation as a paper order.";
+        }
+        case "train_agent": {
+          const agent = agentNamed(text("agent_name"));
+          await request({ kind: "train", id: agent.id, symbol: snapshot?.symbol, synthetic: current?.mode === "replay" });
+          return `Trained ${latest(agent).name}. Ask me what training changed.`;
+        }
+        case "fit_model": {
+          const agent = agentNamed(text("agent_name"));
+          if (!snapshot) throw new Error("No market selected.");
+          await request({ kind: "fit", id: agent.id, symbol: snapshot.symbol, synthetic: current?.mode === "replay",
+            config: { features: ["midpoint", "spread", "last_move"], horizon: num("horizon") ?? 3, ridge: num("ridge") ?? 1 } });
+          return `Fitted a forecast model for ${latest(agent).name}.`;
+        }
+        case "activate_model": {
+          const agent = agentNamed(text("agent_name"));
+          const model = agent.fittedModels?.at(-1);
+          if (!model) throw new Error("No fitted model yet. Fit one first.");
+          await request({ kind: "activate-model", id: agent.id, modelId: model.id });
+          return `Activated the latest model for ${latest(agent).name}.`;
+        }
+        case "propose_budget": {
+          const agent = agentNamed(text("agent_name"));
+          const payload = await request({ kind: "propose", id: agent.id, cap: Math.round(Number(args.per_purchase_usdc) * 1_000_000), budget: Math.round(Number(args.total_usdc) * 1_000_000) });
+          const change = payload.desk?.changes.find(c => c.agent === agent.id);
+          if (change) { await request({ kind: "confirm", id: change.id }); return `Set ${latest(agent).name}'s research limits to ${args.per_purchase_usdc} USDC per purchase and ${args.total_usdc} USDC total.`; }
+          return "Proposal created.";
+        }
+        case "confirm_budget": return "Budget changes are confirmed as soon as you propose them.";
+        case "ask_training": {
+          const agent = agentNamed(text("agent_name"));
+          return (await request({ kind: "ask-training", id: agent.id, question: text("question") || "Summarize training." })).answer ?? "No training records.";
+        }
+        case "desk_query": return (await request({ kind: "ask", question: text("question").slice(0, 600) })).answer ?? "No records.";
+        default: throw new Error("Unknown action.");
+      }
+    };
+  });
 
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -367,7 +477,7 @@ function DeskView() {
                     {running === agent.id ? "Evaluating…" : latestRun?.version === config.number ? "Run again" : "Run agent"}
                   </button>
                   <button className="quiet" disabled={!!busy} onClick={() => { setAddMarket(!!needsMarket); setInstructions(config.instructions); setEditing(agent); }}>{needsMarket ? "Edit allowed markets" : "Edit"}</button>
-                  {auth && <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>}
+                  <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>
                   <a className="quiet" href="#training" onClick={() => setTrainingAgent(agent.id)}>Training</a>
                 </div>
                 {marketDecisions.length > 1 && <div className="equity-panel">
@@ -400,15 +510,14 @@ function DeskView() {
             </div>
             <div className="training-status">
               <span>{desk.mode === "replay" ? "SYNTHETIC dataset · 600 observations" : `${trainingCount} recent observations for ${desk.selected}`}</span>
-              {auth && <button className="primary" disabled={!!busy || !allowedToTrain || (desk.mode === "live" && trainingCount < 120)} onClick={() => {
+              <button className="primary" disabled={!!busy || !allowedToTrain || (desk.mode === "live" && trainingCount < 120)} onClick={() => {
                 if (selectedTrainingAgent) void act("Training strategy", { kind: "train", id: selectedTrainingAgent.id, symbol: snapshot?.symbol, synthetic: desk.mode === "replay" });
-              }}>{desk.mode === "replay" ? "Train on SYNTHETIC" : "Train on live history"}</button>}
+              }}>{desk.mode === "replay" ? "Train on SYNTHETIC" : "Train on live history"}</button>
             </div>
-            {!auth && <p className="empty">{operatorAccess ? "Open Operator access to run training." : "Training runs are available in the operator workspace. Enable operator access in the server settings."}</p>}
-            {auth && !allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
+            {!allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
             {desk.mode === "live" && trainingCount < 120 && <p className="empty">Training on live history needs 120 observations for the same market.</p>}
             {selectedTrainingAgent && <FittedTraining key={"fit-" + selectedTrainingAgent.id} models={selectedTrainingAgent.fittedModels ?? []}
-              active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator={auth}
+              active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator
               fit={async (config, synthetic) => {
                 if (!snapshot) throw new Error("Select a market before fitting.");
                 if (synthetic && snapshot.mode !== "replay") throw new Error("Switch to Replay before fitting a SYNTHETIC model.");
@@ -440,7 +549,7 @@ function DeskView() {
             </section>
             <section className="panel feed" id="research"><h2>Research payments</h2>
               <p className="empty">{auth ? "Verified quote reviews use Solana devnet test USDC." : "Request a quote review and apply its recommendation to your paper portfolio."}</p>
-              {auth && desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
+              {desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
               <PagedFeed entries={[...desk.purchases].reverse()} prefix="purchase-" render={p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}<ValidationSteps stages={p.validation} />
                 {(p.status === "confirmed" || p.status === "simulated") && p.after && p.after !== "hold" &&
                   (desk.decisions.find(d => d.researchPurchase === p.id)
