@@ -33,6 +33,7 @@ export type Decision = {
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
   resource?: typeof RESOURCE;
   researchPurchase?: string;
+  followUpOf?: string;
   anchor?: Anchor;
   validation?: Stage[];
   equityAfter?: number;
@@ -108,8 +109,9 @@ export function equity(desk: Desk, agent: Agent, asOf?: Snapshot) {
   }, 0);
 }
 
-export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string) {
+export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Proposal, tools: Decision["tools"], researchPurchase?: string, followUpOf?: string) {
   const config = latest(agent);
+  if (followUpOf && desk.decisions.some(d => d.followUpOf === followUpOf)) throw new Error("A follow-up already exists.");
   if (!config.active || !config.markets.includes(snapshot.symbol)) throw new Error("Activate the agent and allow this market in its settings.");
   if (desk.decisions.some(d => d.agent === agent.id && d.snapshot.id === snapshot.id && d.version === config.number && d.researchPurchase === researchPurchase))
     throw new Error("This strategy version already ran on this snapshot.");
@@ -153,7 +155,7 @@ export function record(desk: Desk, agent: Agent, snapshot: Snapshot, input: Prop
     : "Sale proceeds would not cover the fee.");
   const decision: Decision = {
     id: crypto.randomUUID(), agent: agent.id, version: config.number, snapshot, at: new Date().toISOString(),
-    change: signal(desk, snapshot), ...proposal, ...(failed ? { action: "hold" as const, resource: undefined } : {}), researchPurchase, fill, tools, validation, equityAfter: equity(desk, agent, snapshot),
+    change: signal(desk, snapshot), ...proposal, ...(failed ? { action: "hold" as const, resource: undefined } : {}), researchPurchase, followUpOf, fill, tools, validation, equityAfter: equity(desk, agent, snapshot),
     policy,
   };
   desk.decisions.push(decision);
@@ -175,10 +177,6 @@ export function reserve(desk: Desk, agent: Agent, decision: Decision, id: string
     status: reason ? "blocked" : "pending", reason: reason || "Budget reserved.", before: decision.action };
   desk.purchases.push(purchase);
   return { purchase, fresh: !reason };
-}
-export function evidenceFor(snapshot: Snapshot) {
-  const spread = snapshot.ask - snapshot.bid;
-  return { spread, text: `AgentDesk quote review for ${snapshot.symbol}. Spread was ${spread}¢ at ${snapshot.at}, based on ${snapshot.source}. ${spread <= 5 ? "The spread met the 5¢ quote-quality threshold." : "The spread exceeded the 5¢ quote-quality threshold."}` };
 }
 export function dollars(cents: number) { return "$" + (cents / 100).toFixed(2); }
 export function usdc(units: number) { return (units / 1_000_000).toFixed(2) + " USDC"; }

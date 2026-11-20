@@ -1,8 +1,8 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  advance, configSchema, currentSnapshot, evidenceFor, keepRecentQuotes, latest, newAgent, recommendation, record,
-  REPLAY_SYMBOL, reserve, reserved, saveVersion, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
+  advance, configSchema, currentSnapshot, keepRecentQuotes, latest, newAgent, recommendation, record,
+  REPLAY_SYMBOL, reserve, reserved, saveVersion, signal, type Agent, type Desk, type Snapshot, type Proposal,
 } from "../../../lib/engine";
 import { trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
@@ -10,7 +10,7 @@ import { geminiSnapshots } from "../../../lib/gemini";
 import { processAnchors, queueAnchor } from "../../../lib/anchor-queue";
 import { verifyAnchor } from "../../../lib/anchor";
 import { evaluateRun, recordRun } from "../../../lib/runner";
-import { evaluateInstructions } from "../../../lib/instructions";
+import { applyReview, completeReview, researchFor } from "../../../lib/research";
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
 import { operator, transact } from "../../../lib/store";
@@ -54,19 +54,6 @@ function agentFor(desk: Desk, id: string): Agent {
   if (!agent) throw new Error("Agent not found in this workspace.");
   return agent;
 }
-
-function completeReview(desk: Desk, purchase: Purchase, snapshot: Snapshot, programs: readonly string[], evidence = evidenceFor(snapshot), simulated = false) {
-  purchase.status = simulated ? "simulated" : "confirmed";
-  if (!simulated) purchase.programs = [...programs];
-  purchase.evidence = evidence.text;
-  const decision = desk.decisions.find(d => d.id === purchase.decision);
-  const version = agentFor(desk, purchase.agent).versions.find(v => v.number === decision?.version);
-  const rules = version && evaluateInstructions(version.instructions, snapshot);
-  purchase.after = evidence.spread > 5 || !rules || rules.notes.length ? "hold"
-    : rules.matched?.action ?? (purchase.before === "hold" && snapshot.ask < 50 ? "buy" : purchase.before);
-  purchase.reason = simulated ? "Demo purchase complete. Sample research is ready." : "Devnet USDC transfer confirmed. Research is ready.";
-}
-
 
 export async function GET(req: NextRequest) {
   const { auth, owner, reply } = scope(req);
@@ -112,12 +99,12 @@ export async function POST(req: NextRequest) {
       return reply({ signedUrl: signed_url });
     }
     if (input.kind === "buy") {
-      const work = await transact(owner, desk => {
+      const work = await transact(owner, async desk => {
         const agent = agentFor(desk, input.id);
         const decision = desk.decisions.find(d => d.id === input.decision && d.agent === agent.id);
         if (!decision?.resource) throw new Error("Choose a decision with an approved research request.");
         const result = reserve(desk, agent, decision, input.requestId, !auth || paymentReady(), !auth);
-        if (!auth && result.fresh) completeReview(desk, result.purchase, decision.snapshot, [], evidenceFor(decision.snapshot), true);
+        if (!auth && result.fresh) completeReview(desk, result.purchase, decision.snapshot, await researchFor(decision.snapshot), true, []);
         return { ...result, snapshot: decision.snapshot };
       });
       if (auth && work.fresh) {
@@ -127,7 +114,7 @@ export async function POST(req: NextRequest) {
             Object.assign(purchase, receipt);
           }));
           await transact(owner, desk => {
-            completeReview(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.programs, result.evidence);
+            completeReview(desk, desk.purchases.find(p => p.id === work.purchase.id)!, work.snapshot, result.evidence, false, result.programs);
           });
         } catch (err) {
           await transact(owner, desk => {
@@ -147,27 +134,22 @@ export async function POST(req: NextRequest) {
       return reply(await transact(owner, desk => {
         const purchase = desk.purchases.find(p => p.id === input.id && p.status === (auth ? "confirmed" : "simulated"));
         if (!purchase?.after || purchase.after === "hold") throw new Error("There is no completed review with a trade recommendation.");
-        const existing = desk.decisions.find(d => d.researchPurchase === purchase.id);
-        if (existing) return { desk, decision: existing, reused: true };
-        const original = desk.decisions.find(d => d.id === purchase.decision);
-        const snapshot = currentSnapshot(desk);
-        const agent = agentFor(desk, purchase.agent);
-        if (!original || !snapshot || snapshot.id !== original.snapshot.id || latest(agent).number !== original.version)
-          throw new Error("The review applies to its original quote and strategy version. Run the agent on the current quote.");
-        const decision = record(desk, agent, snapshot, {
-          action: purchase.after, reason: auth ? "Operator applied the confirmed quote review recommendation." : "Applied the simulated quote review recommendation.",
-        }, [{ name: auth ? "confirmed_research" : "simulated_research", result: purchase.id }], purchase.id);
-        return { desk, decision, reused: false };
+        const result = applyReview(desk, purchase);
+        if (!result) throw new Error("The review applies to its original quote and strategy version. Run the agent on the current quote.");
+        return { desk, ...result };
       }));
     }
     if (input.kind === "reconcile") {
       const purchase = await transact(owner, desk => desk.purchases.find(p => p.id === input.id));
       if (!purchase || !["pending", "uncertain"].includes(purchase.status)) throw new Error("No unresolved purchase with that ID.");
       const result = await verifyReceipt(purchase);
-      return reply({ desk: await transact(owner, desk => {
+      return reply({ desk: await transact(owner, async desk => {
         const saved = desk.purchases.find(p => p.id === input.id)!;
         if (!["pending","uncertain"].includes(saved.status)) return desk;
-        if (result.state === "confirmed") completeReview(desk, saved, desk.decisions.find(d => d.id === saved.decision)!.snapshot, result.programs);
+        if (result.state === "confirmed") {
+          const snapshot = desk.decisions.find(d => d.id === saved.decision)!.snapshot;
+          completeReview(desk, saved, snapshot, await researchFor(snapshot), false, result.programs);
+        }
         else if (result.state === "failed") { saved.status = "failed"; saved.reason = "Devnet recorded a failed transaction. Budget released."; }
         else { saved.reason = "No conclusive devnet receipt. Budget remains reserved and duplicate payment stays blocked."; }
         return desk;

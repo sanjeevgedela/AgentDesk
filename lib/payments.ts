@@ -10,7 +10,8 @@ import { ExactSvmScheme as Client } from "@x402/svm/exact/client";
 import { ExactSvmScheme as Server } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { evidenceFor, PRICE, type Purchase, type Snapshot } from "./engine";
+import { evidenceSchema, researchFor } from "./research";
+import { PRICE, type Purchase, type Snapshot } from "./engine";
 
 export const NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 export const MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
@@ -18,11 +19,11 @@ const RPC = "https://api.devnet.solana.com";
 const FACILITATOR = "https://x402.org/facilitator";
 const receiptPattern = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
 const snapshotSchema = z.object({
-  id: z.string().max(100), symbol: z.string().max(120), title: z.string().max(350),
+  id: z.string().max(160), symbol: z.string().max(120), title: z.string().max(350),
   bid: z.number().int().min(1).max(99), ask: z.number().int().min(1).max(99),
   at: z.iso.datetime(), source: z.string().max(500), mode: z.enum(["live", "replay"]),
 }).refine(s => s.bid <= s.ask);
-const evidenceSchema = z.object({ spread: z.number().int().nonnegative(), text: z.string() });
+
 
 export function paymentReady() {
   return Boolean(process.env.SOLANA_DEVNET_KEYPAIR && process.env.RESEARCH_RECIPIENT &&
@@ -44,7 +45,7 @@ export async function research(request: NextRequest) {
   paywall ??= withX402(async (req): Promise<NextResponse> => {
     const parsed = snapshotSchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return NextResponse.json({ error: "Invalid snapshot" }, { status: 400 });
-    return NextResponse.json(evidenceFor(parsed.data));
+    return NextResponse.json(await researchFor(parsed.data));
   }, {
     accepts: [{ scheme: "exact", price: { amount: String(PRICE), asset: MINT, extra: {} }, network: NETWORK, payTo: address(recipient) }],
     description: "AgentDesk quote quality research, operated by AgentDesk",
