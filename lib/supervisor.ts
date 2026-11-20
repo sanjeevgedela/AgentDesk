@@ -13,6 +13,7 @@ export function answer(desk: Desk, question: string) {
     const purchases = desk.purchases.filter(p => p.agent === agent.id);
     const confirmed = purchases.filter(p => p.status === "confirmed");
     const simulated = purchases.filter(p => p.status === "simulated");
+    const training = agent.training?.at(-1);
     const change = agent.versions.at(-2);
     const updates = change ? (["name","strategy","instructions","threshold","positionLimit","markets","active"] as const)
       .filter(k => JSON.stringify(change[k]) !== JSON.stringify(config[k])).map(k => `${k}: ${change[k]} → ${config[k]}`).join(", ") : "";
@@ -26,6 +27,7 @@ export function answer(desk: Desk, question: string) {
       ...(simulated.length ? [`Simulated research: ${usdc(simulated.reduce((sum, p) => sum + p.amount, 0))}.`] : []),
       ...purchases.slice(-3).map(p => `Purchase [${p.id}] · ${p.status}. ${p.reason}${p.after ? ` Recommendation ${p.before} → ${p.after}. ${p.evidence}` : ""}`),
       overlaps.length ? "Overlapping exposure: " + overlaps.join(", ") + "." : "No overlapping open positions.",
+      ...(training ? [`Training: ${training.dataset.synthetic ? "SYNTHETIC" : "recorded"} ${training.dataset.bars} bars, SHA-256 ${training.dataset.hash}. ${training.appliedVersion ? "Promoted v" + training.appliedVersion : "Kept incumbent"}. Held-out PnL difference ${training.report.trial.pnl - training.report.incumbent.pnl} cents.`] : []),
       change ? `Changes from v${change.number}: ${updates || "no configuration differences"}.` : "This is the first strategy version.",
     ].join("\n");
   }).join("\n\n") || "Create an agent and record a run first.";

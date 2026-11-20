@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TrainingRecord } from "./training";
 import { guard, parseInstructions } from "./policy";
 
 export const INITIAL_CASH = 100_000;
@@ -13,10 +14,11 @@ export const configSchema = z.object({
   positionLimit: z.number().int().min(1).max(1000),
   markets: z.array(z.string().regex(/^[\w-]+$/).max(120)).min(1).max(30),
   active: z.boolean(),
+  auto: z.boolean().optional(),
 });
 export type Config = z.infer<typeof configSchema>;
 export type Version = Config & { number: number; at: string };
-export type Agent = { id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
+export type Agent = { training?: TrainingRecord[]; id: string; versions: Version[]; budget: number; cap: number; resources: string[]; cash: number; positions: Record<string, number> };
 export type Snapshot = { id: string; symbol: string; title: string; bid: number; ask: number; at: string; source: string; mode: "replay" | "live" };
 export const proposalSchema = z.object({
   action: z.enum(["buy", "sell", "hold"]),
@@ -45,6 +47,12 @@ export type Desk = {
   changes: BudgetChange[]; replay: number; mode: Snapshot["mode"]; selected: string;
 };
 export function latest(agent: Agent) { return agent.versions[agent.versions.length - 1]; }
+
+export function saveVersion(agent: Agent, config: Config) {
+  const version = { ...config, number: latest(agent).number + 1, at: new Date().toISOString() };
+  agent.versions.push(version);
+  return version;
+}
 
 export const REPLAY_SYMBOL = "REPLAY-FED";
 const replayQuotes = [[36, 39], [42, 45], [48, 56], [53, 57], [45, 49], [38, 42]];

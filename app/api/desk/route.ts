@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   advance, configSchema, currentSnapshot, evidenceFor, keepRecentQuotes, latest, newAgent, recommendation, record,
-  REPLAY_SYMBOL, reserve, reserved, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
+  REPLAY_SYMBOL, reserve, reserved, saveVersion, signal, type Agent, type Desk, type Purchase, type Snapshot, type Proposal,
 } from "../../../lib/engine";
-import { appendQuotes } from "../../../lib/history";
+import { trainAgent } from "../../../lib/training";
+import { appendQuotes, quoteSymbol } from "../../../lib/history";
 import { geminiSnapshots } from "../../../lib/gemini";
-import { parseInstructions } from "../../../lib/policy";
+import { evaluateRun, recordRun } from "../../../lib/runner";
 import { evaluateInstructions } from "../../../lib/instructions";
 import { interpret } from "../../../lib/model";
 import { pay, PaymentError, paymentReady, verifyReceipt } from "../../../lib/payments";
@@ -18,6 +19,7 @@ const amount = z.number().int().min(0).max(10_000_000);
 const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("advance") }),
   z.object({ kind: z.literal("demo-run") }),
+  z.object({ kind: z.literal("train"), id: uuid, symbol: quoteSymbol.optional(), synthetic: z.boolean().optional() }),
   z.object({ kind: z.literal("mode"), mode: z.enum(["replay","live"]) }),
   z.object({ kind: z.literal("select"), symbol: z.string().max(120) }),
   z.object({ kind: z.literal("save"), id: uuid.optional(), config: configSchema }),
@@ -62,25 +64,6 @@ function completeReview(desk: Desk, purchase: Purchase, snapshot: Snapshot, prog
   purchase.reason = simulated ? "Demo purchase complete. Sample research is ready." : "Devnet USDC transfer confirmed. Research is ready.";
 }
 
-function evaluateRun(version: ReturnType<typeof latest>, snapshot: Snapshot, change: number | null) {
-  const { matched, notes } = evaluateInstructions(version.instructions, snapshot);
-  const unknown = parseInstructions(notes.join("\n")).unrecognized;
-  const baseline = recommendation(version, change);
-  return {
-    matched, notes: unknown, baseline,
-    proposal: matched ?? (unknown.length
-      ? { action: "hold" as const, reason: "Some instructions require an enabled model. The run recorded a hold." }
-      : baseline),
-    source: matched ? "saved_instruction" : unknown.length ? "instructions_require_model" : "strategy_rule",
-  };
-}
-
-function recordRun(desk: Desk, agent: Agent, snapshot: Snapshot, proposal: Proposal, source: string) {
-  return record(desk, agent, snapshot, proposal, [
-    { name: "market_snapshot", result: snapshot.source },
-    { name: source, result: proposal.reason },
-  ]);
-}
 
 export async function GET(req: NextRequest) {
   const { auth, owner, reply } = scope(req);
@@ -97,7 +80,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["reconcile", "voice", "propose", "confirm"].includes(input.kind) && !auth)
+  if (["reconcile", "voice", "propose", "confirm", "train"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -249,13 +232,16 @@ export async function POST(req: NextRequest) {
           if (!desk.snapshots.some(s => s.symbol === input.symbol && s.mode === desk.mode)) throw new Error("Market is unavailable.");
           desk.selected = input.symbol;
           break;
+        case "train":
+          return trainAgent(agentFor(desk, input.id), input.symbol ?? desk.selected, input.synthetic).then(training => ({ desk, training }));
         case "save":
+          if (!auth && input.config.auto) throw new Error("Scheduled agents are available in the operator workspace.");
           if (!input.id) {
             if (desk.agents.length >= 12) throw new Error("A workspace can have up to 12 agents.");
             desk.agents.push(newAgent(input.config));
           } else {
             const agent = agentFor(desk, input.id);
-            agent.versions.push({ ...input.config, number: latest(agent).number + 1, at: new Date().toISOString() });
+            saveVersion(agent, input.config);
           }
           break;
         case "ask": return { answer: answer(desk, input.question) };

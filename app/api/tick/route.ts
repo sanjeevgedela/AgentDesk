@@ -1,3 +1,4 @@
+import { runAutopilot } from "../../../lib/autopilot";
 import { NextRequest, NextResponse } from "next/server";
 import { geminiSnapshots } from "../../../lib/gemini";
 import { appendQuotes } from "../../../lib/history";
@@ -16,7 +17,8 @@ export async function GET(request: NextRequest) {
     });
     if (!accepted) return NextResponse.json({ skipped: true });
     const quotes = await geminiSnapshots();
-    return NextResponse.json({ fetched: quotes.length, inserted: await appendQuotes(quotes) });
+    const inserted = await appendQuotes(quotes);
+    return NextResponse.json({ fetched: quotes.length, inserted, runs: await runAutopilot(quotes) });
   } catch {
     return NextResponse.json({ error: "Quote collection unavailable." }, { status: 502 });
   }
