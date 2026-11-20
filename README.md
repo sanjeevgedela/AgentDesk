@@ -68,7 +68,7 @@ Prompt the agent to call `desk_query` before answering questions about this work
 
 Import this branch into a Vercel Next.js project. Set the target environment variables, apply the Supabase migration, and use the preview URL for verification. Promote only after checking microphone, data persistence and operator access on the intended deployment.
 
-Run `npm run typecheck`, `npm run lint`, `npm test` and `npm run build` before deploying. The hosted persistence, funded settlement and audible ElevenLabs session require integration credentials. QuickNode Streams, Grok Bot and Arc are outside the current build.
+Run `npm run typecheck`, `npm run lint`, `npm test` and `npm run build` before deploying. The hosted persistence, funded settlement and audible ElevenLabs session require integration credentials. Grok Bot and Arc are outside the current build.
 
 ## Two-minute demo
 
@@ -108,7 +108,7 @@ The committed [SYNTHETIC report](reports/eval-72541c08.md) shows that training d
 
 Research uses only observations at or before the original quote. The vendor wallet receives devnet USDC from a distinct payer. Once independently verified, the payment can trigger at most one policy-checked paper follow-up while the original quote and strategy are current. Exact integer base units protect the payment amount. Pending or ambiguous transfers remain reserved. See [funding instructions](scripts/fund-devnet.md) and [voice verification](scripts/voice-checklist.md).
 
-The memo signer uses `SOLANA_AGENT_KEYPAIR` or falls back to the devnet payer. The app simulates before broadcasting, persists the derived signature before sending, and retries verification without re-signing an ambiguous submission. A verifier compares the stored decision and policy commitment against the Memo program receipt. A mismatch appears as **TAMPERED**. No funded transfer or memo signature has been confirmed in this environment. QuickNode Streams is deferred and no Grok bot is included.
+The memo signer uses `SOLANA_AGENT_KEYPAIR` or falls back to the devnet payer. The app simulates before broadcasting, persists the derived signature before sending, and retries verification without re-signing an ambiguous submission. A verifier compares the stored decision and policy commitment against the Memo program receipt. A mismatch appears as **TAMPERED**. No funded transfer or memo signature has been confirmed in this environment. QuickNode Streams can optionally trigger memo verification as described below. No Grok bot is included.
 
 ## Three-minute judging walkthrough
 
@@ -136,3 +136,7 @@ Install the Python dependencies with `python3 -m pip install -r requirements-ml.
 - **Live Gemini** merges recorded bid/ask history and any prices Gemini returns for the same contract. Historical prices are displayed as midpoint marks and excluded from the bid/ask training dataset. A new contract can have little or no available history.
 - Automatic training checks the selected market every 30 seconds while the workspace is visible. An active agent must allow that market. Live fitting starts after 120 recorded quotes, then refits after 200 additional observations using the latest 5,000. Synthetic fits use a separate fixture. The Training panel shows the dataset, chronological holdout, 30 epochs of scikit-learn training loss, and paper results against the same strategy without the forecast. Only compatible forecasts that beat the validation zero-move baseline are automatically used. Live Gemini runs use paper fills.
 - For collection with the tab closed, set `CRON_SECRET` in the app and collector environment and run `npm run collect` in a separate long-running process. It calls the authenticated tick endpoint roughly once a minute until stopped. Set `AGENTDESK_URL` if the server is on another host or port. The tick runs enabled operator agents and checks their selected live market for new training data. Hosted setups need persistent workspace and quote storage.
+
+### QuickNode Streams memo notifications
+
+AgentDesk can receive QuickNode Streams notifications to reconcile pending Solana devnet decision memos. Provision a Solana devnet stream that filters for the Memo program plus your memo signer. Configure its Webhook destination as `/api/streams/quicknode` on your hosted app. Set `QUICKNODE_STREAM_TOKEN` to a private random value of at least 32 characters and configure the destination to send `Authorization: Bearer <token>`. Start from `integrations/quicknode/filter.js` and set the public signer address. The filter emits an object containing a `signatures` array of up to 500 base58 transaction signatures, for example `{ "signatures": [] }` for an empty batch. The app matches pending submissions and verifies their memo contents independently through its configured Solana RPC. Gemini remains the source of market quotes. Stream provisioning requires your QuickNode account.

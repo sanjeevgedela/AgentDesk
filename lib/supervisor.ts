@@ -1,12 +1,28 @@
-import { agentStats, dollars, latest, usdc, type Desk } from "./engine";
+import { agentStats, currentSnapshot, dollars, latest, usdc, type Desk } from "./engine";
 
 export function answer(desk: Desk, question: string) {
   const match = question.toLowerCase();
+  const quote = currentSnapshot(desk);
+  const marketDecisions = desk.decisions.filter(d => d.snapshot.mode === desk.mode && d.snapshot.symbol === desk.selected);
+  if (/quote|market|price|spread|midpoint|bid|ask price|what changed|why.*(hold|buy|sell)|disagree/.test(match)) {
+    if (!quote) return "Choose a market to see its last observed quote.";
+    const previous = desk.snapshots.findLast(q => q.symbol === quote.symbol && q.mode === quote.mode && q.at < quote.at);
+    const mid = (quote.ask + quote.bid) / 2;
+    const move = previous ? ` The midpoint moved ${(mid - (previous.ask + previous.bid) / 2).toFixed(1)}¢ since the previous observation.` : "";
+    const age = desk.mode === "live" ? ` Last observed ${Math.max(0, Math.floor((Date.now() - Date.parse(quote.at)) / 1000))} seconds ago.` : "";
+    const header = `${desk.mode === "replay" ? "Synthetic replay" : "Gemini live feed"} · ${quote.title} (${quote.symbol}). YES bid ${quote.bid}¢ / ask ${quote.ask}¢ · midpoint ${mid.toFixed(1)}¢ · spread ${quote.ask - quote.bid}¢. Observation ${quote.at}.${age}${move}`;
+    const named = desk.agents.filter(a => match.includes(latest(a).name.toLowerCase()));
+    const decisions = (named.length ? named : desk.agents).flatMap(agent => {
+      const d = marketDecisions.findLast(item => item.agent === agent.id);
+      return d ? [`${latest(agent).name} recorded ${d.action.toUpperCase()} [${d.id}] at ${d.snapshot.at}. ${d.reason} ${d.policy}`] : [];
+    });
+    return [header, ...(decisions.length ? decisions : ["There are no saved decisions for this market yet. Run an eligible agent to see its reasoning."])].join("\n\n");
+  }
   const selected = desk.agents.filter(a => match.includes(latest(a).name.toLowerCase()));
   const agents = selected.length ? selected : desk.agents;
-  const comparison = desk.decisions.length && /disagree|compar/.test(match)
-    ? desk.decisions.filter(d => d.snapshot.id === desk.decisions.at(-1)?.snapshot.id)
-    : desk.decisions;
+  const comparison = marketDecisions.length && /compar/.test(match)
+    ? marketDecisions.filter(d => d.snapshot.id === marketDecisions.at(-1)?.snapshot.id)
+    : marketDecisions;
   return agents.map(agent => {
     const config = latest(agent);
     const decision = comparison.findLast(d => d.agent === agent.id);

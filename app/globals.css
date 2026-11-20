@@ -253,3 +253,8 @@ body { background: radial-gradient(ellipse at 75% -5%, #1a2a3c 0, var(--bg) 52%)
 .backtest-pages { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .7rem; }
 .training-chat { border-top: 1px solid var(--line); padding-top: 1rem; }
 .training-chat p { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.fit-comparison { margin: 1rem 0; padding: 1rem; background: var(--surface, #192432); border-radius: .75rem; }
+.fit-comparison figcaption { font-weight: 700; }
+.fit-comparison div { display: grid; grid-template-columns: minmax(7rem, 1fr) 2fr; align-items: center; gap: .75rem; margin: .5rem 0; }
+.fit-comparison meter { width: 100%; height: .85rem; }

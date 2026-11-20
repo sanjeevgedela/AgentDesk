@@ -15,7 +15,7 @@ const LIVE_REFRESH_MS = 500;
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const historySchema = z.object({ backfill: z.object({ status: z.enum(["available", "unavailable", "empty"]), source: z.string(), points: z.array(z.object({ at: z.iso.datetime(), cents: z.number() })) }).optional(), bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
-const suggestions = ["Why did the agents disagree?", "How much research did each agent buy?", "What changed between strategy versions?"];
+const suggestions = ["What’s the current quote?", "Why did the agents disagree?", "How much research did each agent buy?"];
 
 export default function Dashboard() {
   return <ConversationProvider><DeskView /></ConversationProvider>;
@@ -422,7 +422,7 @@ function DeskView() {
           </section>
           <section className="panel training-desk" id="training" aria-labelledby="training-heading">
             <div className="section-head">
-              <div><span className="eyebrow">Strategy research</span><h2 id="training-heading">Agent training</h2><p className="empty">Tune entry thresholds and position limits, then compare the candidate with the current strategy on held-out quotes.</p></div>
+              <div><span className="eyebrow">Strategy research</span><h2 id="training-heading">Agent training</h2><p className="empty">Select an agent to see how its gradient-descent forecast learned and how it scored on unseen quotes.</p></div>
               <label>Training agent<select aria-label="Training agent" value={selectedTrainingAgent?.id ?? ""} onChange={event => setTrainingAgent(event.target.value)}>
                 {desk.agents.map(agent => <option key={agent.id} value={agent.id}>{latest(agent).name}</option>)}
               </select></label>
@@ -433,11 +433,11 @@ function DeskView() {
                 if (selectedTrainingAgent) void act("Training strategy", { kind: "train", id: selectedTrainingAgent.id, symbol: snapshot?.symbol, synthetic: desk.mode === "replay" });
               }}>{desk.mode === "replay" ? "Train on SYNTHETIC" : "Train on live history"}</button>}
             </div>
-            {!auth && <p className="empty">{operatorAccess ? "Open Operator access to run training." : "Training runs are available in the operator workspace. Enable operator access in the server settings."}</p>}
+            {!auth && <p className="empty">{operatorAccess ? "Automatic model fitting is available here. Operator access also enables manual strategy tuning." : "Automatic fitting runs for active agents that allow the selected market."}</p>}
             {auth && !allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
             {desk.mode === "live" && trainingCount < 120 && <p className="empty">Training on live history needs 120 observations for the same market.</p>}
             <p role="status">{trainingStatus}</p>
-            {selectedTrainingAgent && <FittedTraining key={"fit-" + selectedTrainingAgent.id} models={selectedTrainingAgent.fittedModels ?? []}
+            {selectedTrainingAgent && <FittedTraining key={selectedTrainingAgent.id + "/" + desk.mode + "/" + desk.selected} demo={desk.mode === "replay"} models={(selectedTrainingAgent.fittedModels ?? []).filter(model => model.symbol === desk.selected && model.synthetic === (desk.mode === "replay"))}
               active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator={auth}
               fit={async (config, synthetic) => {
                 if (!snapshot) throw new Error("Select a market before fitting.");
@@ -480,7 +480,7 @@ function DeskView() {
                 {["uncertain","pending"].includes(p.status) && <button className="quiet" disabled={!!busy || !auth} onClick={() => act("Checking Solana", { kind: "reconcile", id: p.id })}>Check settlement</button>}</article>} />
             </section>
           </div>
-          <section className="panel feed" id="supervisor"><div className="section-head"><div><h2>Supervisor</h2><p className="empty">Answers are generated from saved decisions, positions and research records.</p></div>
+          <section className="panel feed" id="supervisor"><div className="section-head"><div><h2>Head agent</h2><p className="empty">Ask about the selected market’s quote, what changed, or why agents made different decisions.</p></div>
             {auth && <button className="quiet" disabled={!!busy || (!talking && !voiceAvailable)} onClick={() => perform(talking ? "Ending call" : "Connecting ElevenLabs", async () => {
               if (talking) await voice.endSession();
               else {
@@ -497,7 +497,7 @@ function DeskView() {
               const kind = desk.purchases.some(p => p.id === id) ? "purchase" : "decision";
               return <a key={j} href={`#${kind}-${id}`}>[{id.slice(0, 8)}]</a>;
             })}</p></article>)}</div>
-            <form className="chat" onSubmit={e => { e.preventDefault(); if (question.trim()) void ask(question); }}><input value={question} maxLength={600} onChange={e => setQuestion(e.target.value)} placeholder="Ask the supervisor…" aria-label="Question" /><button className="primary" disabled={!question.trim() || !!busy}>Send</button></form>
+            <form className="chat" onSubmit={e => { e.preventDefault(); if (question.trim()) void ask(question); }}><input value={question} maxLength={600} onChange={e => setQuestion(e.target.value)} placeholder="Ask about this market…" aria-label="Question" /><button className="primary" disabled={!question.trim() || !!busy}>Send</button></form>
           </section>
         </>}
       </div>
