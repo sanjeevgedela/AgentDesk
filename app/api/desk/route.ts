@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
   const { auth, owner, reply } = scope(req);
   if (req.headers.has("authorization") && !auth) return reply({ error: "Operator token rejected." }, 401);
   try {
-    return reply({ desk: await transact(owner, desk => desk), auth, model: auth && !!process.env.OPENAI_API_KEY, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
+    return reply({ desk: await transact(owner, desk => desk), auth, operatorAccess: process.env.AGENTDESK_SHOW_OPERATOR_ACCESS === "true", model: auth && !!process.env.OPENAI_API_KEY, voice: !!(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_AGENT_ID) });
   } catch { return reply({ error: "Workspace storage is unavailable. Check database setup." }, 503); }
 }
 
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return reply({ error: "Check the requested action and input values." }, 400);
   const input = parsed.data;
-  if (["reconcile", "voice"].includes(input.kind) && !auth)
+  if (["reconcile", "voice", "propose", "confirm"].includes(input.kind) && !auth)
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
         const agent = agentFor(desk, input.id);
         const decision = desk.decisions.find(d => d.id === input.decision && d.agent === agent.id);
         if (!decision?.resource) throw new Error("Choose a decision with an approved research request.");
-        const result = reserve(desk, agent, decision, input.requestId, !auth || paymentReady());
+        const result = reserve(desk, agent, decision, input.requestId, !auth || paymentReady(), !auth);
         if (!auth && result.fresh) completeReview(desk, result.purchase, decision.snapshot, [], evidenceFor(decision.snapshot), true);
         return { ...result, snapshot: decision.snapshot };
       });

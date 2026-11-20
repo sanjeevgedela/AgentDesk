@@ -135,11 +135,12 @@ test("running an agent applies saved instructions and returns the original decis
   }
 });
 
-test("a visitor can approve a simulated review and apply it exactly once without network calls", async t => {
+test("a visitor can complete and apply an uncapped simulated review without network calls", async t => {
   const owner = crypto.randomUUID();
   const { id, decision } = await transact(owner, desk => {
     advance(desk);
     const agent = desk.agents[2];
+    agent.cap = agent.budget = 0;
     const snapshot = currentSnapshot(desk)!;
     return { id: agent.id, decision: record(desk, agent, snapshot, recommendation(latest(agent), signal(desk, snapshot)), []).id };
   });
@@ -154,17 +155,12 @@ test("a visitor can approve a simulated review and apply it exactly once without
   const network = t.mock.method(globalThis, "fetch", async () => { throw new Error("Demo must stay offline"); });
   try {
     const buy = () => call({ kind: "buy", id, decision, requestId: crypto.randomUUID() });
-    const blocked = await buy();
-    assert.equal(blocked.desk.purchases[0].status, "blocked");
-    assert.equal(blocked.desk.purchases[0].signature, undefined);
-    const proposal = await call({ kind: "propose", id, cap: PRICE, budget: 1_000_000 });
-    assert.equal((await call({ kind: "confirm", id: proposal.desk.changes[0].id }, outsider)).status, 400);
-    assert.equal((await call({ kind: "confirm", id: proposal.desk.changes[0].id })).status, 200);
-    const receipt = (await buy()).desk.purchases[1];
+    assert.equal((await call({ kind: "propose", id, cap: PRICE, budget: PRICE })).status, 403);
+    const receipt = (await buy()).desk.purchases[0];
     assert.equal(receipt.status, "simulated");
     assert.equal(receipt.after, "buy");
     assert.equal(receipt.signature, undefined);
-    assert.equal((await buy()).desk.purchases.length, 2);
+    assert.equal((await buy()).desk.purchases.length, 1);
     assert.equal((await call({ kind: "apply-review", id: receipt.id }, outsider)).status, 400);
     const result = await call({ kind: "apply-review", id: receipt.id });
     assert.equal(result.decision.fill.quantity, 5);

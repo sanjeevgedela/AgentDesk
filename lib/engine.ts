@@ -119,13 +119,13 @@ export function reserved(desk: Desk, agentId: string) {
   return desk.purchases.filter(p => p.agent === agentId && ["pending", "confirmed", "simulated", "uncertain"].includes(p.status))
     .reduce((total, p) => total + p.amount, 0);
 }
-export function reserve(desk: Desk, agent: Agent, decision: Decision, id: string, enabled: boolean) {
+export function reserve(desk: Desk, agent: Agent, decision: Decision, id: string, enabled: boolean, simulated = false) {
   const existing = desk.purchases.find(p => p.id === id || (p.agent === agent.id && p.decision === decision.id && ["pending","uncertain","confirmed","simulated"].includes(p.status)));
   if (existing) return { purchase: existing, fresh: false };
   let reason = "";
   if (!latest(agent).active || !agent.resources.includes(RESOURCE)) reason = "Agent or resource is disabled.";
-  else if (PRICE > agent.cap) reason = "Research price exceeds the per-purchase cap.";
-  else if (reserved(desk, agent.id) + PRICE > agent.budget) reason = "Research price exceeds the remaining budget.";
+  else if (!simulated && PRICE > agent.cap) reason = "Research price exceeds the per-purchase cap.";
+  else if (!simulated && reserved(desk, agent.id) + PRICE > agent.budget) reason = "Research price exceeds the remaining budget.";
   else if (!enabled) reason = "Solana devnet payment configuration is unavailable.";
   const purchase: Purchase = { id, agent: agent.id, decision: decision.id, amount: PRICE, at: new Date().toISOString(),
     status: reason ? "blocked" : "pending", reason: reason || "Budget reserved.", before: decision.action };

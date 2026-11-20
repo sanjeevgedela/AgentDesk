@@ -17,6 +17,7 @@ Open http://localhost:3000. Replay, the public Gemini feed, paper fills, strateg
 | Environment variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Supabase Postgres connection, required on Vercel |
+| `AGENTDESK_SHOW_OPERATOR_ACCESS` | Set to `true` to show the optional operator sign-in in the dashboard. Defaults to hidden. |
 | `AGENTDESK_OPERATOR_TOKEN` | Operator access to the separate workspace, settlement, voice and budget confirmation. Generate a secret with `openssl rand -hex 32`. |
 | `RESEARCH_INTERNAL_TOKEN` | Separate server-to-research authentication secret. Generate independently. |
 | `SOLANA_DEVNET_KEYPAIR` | Dedicated signer as the JSON array from a Solana CLI keypair file. Fund with devnet USDC only. |
@@ -28,7 +29,7 @@ Set secrets in `.env.local` or the Vercel project environment. Keep the signer f
 
 ## Keyless demo
 
-Open the app and click **Run replay agents**. The guided replay advances to the first price move and records decisions from the default strategies. Use the demo controls to request a quote review, see the budget block, propose and confirm a higher limit, and apply the review to the paper portfolio. Refresh to continue where you left off. Demo budgets and spending belong to your browser session. Simulated receipts have no Solana signature. The separate operator workspace supports actual devnet payments and configured ElevenLabs sessions.
+Open the app and click **Run replay agents**. The guided replay advances to the first price move and records decisions from the default strategies. Use the demo controls to request a quote review and apply it to the paper portfolio. The demo has no research spending caps or budget approval steps. Refresh to continue where you left off. Demo budgets and spending belong to your browser session. Simulated receipts have no Solana signature. The separate operator workspace supports actual devnet payments and configured ElevenLabs sessions.
 
 ## Decision loop
 
@@ -71,7 +72,7 @@ Run `npm run typecheck`, `npm run lint`, `npm test` and `npm run build` before d
 
 ## Two-minute demo
 
-1. Unlock the operator workspace. Choose **Replay**, advance one snapshot, then run Trend Scout and Evidence Analyst. Trend Scout can place a paper fill. Evidence Analyst starts with a hold.
+1. Set `AGENTDESK_SHOW_OPERATOR_ACCESS=true` in the server environment and unlock the operator workspace. Choose **Replay**, advance one snapshot, then run Trend Scout and Evidence Analyst. Trend Scout can place a paper fill. Evidence Analyst starts with a hold.
 2. On Evidence Analyst, click **Buy requested quote review**. The 0.10 USDC cap blocks a 0.25 USDC purchase. Open the Research log and read the policy outcome.
 3. Start voice and ask why Evidence Analyst held, then say “Propose a 0.25 USDC per-purchase cap and a 1 USDC total budget for Evidence Analyst.” Review the parsed change in Research and click **Confirm budget change**.
 4. Request the review again. With the configured devnet signer funded, open the confirmed Explorer receipt. The 3¢ replay spread qualifies as usable evidence and revises the recommendation from hold to buy.
