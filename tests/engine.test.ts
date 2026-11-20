@@ -78,3 +78,27 @@ test("anonymous spending, configuration confirmation and voice requests are reje
     assert.equal(response.status, 403);
   }
 });
+
+test("reconciliation requires exact mint credit and reports onchain failure", async t => {
+  const signature = "2".repeat(88); // synthetic fixture used only by this isolated RPC test
+  const mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+  const recipient = "test-recipient";
+  const programId = "test-token-program";
+  let result: unknown = null;
+  t.mock.method(globalThis, "fetch", async () => Response.json({ result }));
+  const receipt = { signature, mint, recipient };
+  assert.equal((await verifyReceipt(receipt)).state, "uncertain");
+  result = { meta: { err: { InstructionError: [0, "InvalidArgument"] } } };
+  assert.equal((await verifyReceipt(receipt)).state, "failed");
+  const balance = (amount: string, owner = recipient) => ({ accountIndex: 1, mint, owner, uiTokenAmount: { amount } });
+  const tx = (amount: string, owner = recipient) => ({
+    meta: { err: null, preTokenBalances: [balance("250000")], postTokenBalances: [balance(amount, owner)] },
+    transaction: { message: { instructions: [{ programId }] } },
+  });
+  result = tx("500001");
+  assert.equal((await verifyReceipt(receipt)).state, "uncertain");
+  result = tx("500000", "different-recipient");
+  assert.equal((await verifyReceipt(receipt)).state, "uncertain");
+  result = tx("500000");
+  assert.deepEqual(await verifyReceipt(receipt), { state: "confirmed", programs: [programId] });
+});
