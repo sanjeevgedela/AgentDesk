@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Anchor } from "./anchor";
 import type { TrainingRecord } from "./training";
 import { runPipeline, type Stage } from "./validate";
 import { guard, parseInstructions } from "./policy";
@@ -32,6 +33,7 @@ export type Decision = {
   change: number | null; action: Proposal["action"]; reason: string; policy: string;
   resource?: typeof RESOURCE;
   researchPurchase?: string;
+  anchor?: Anchor;
   validation?: Stage[];
   equityAfter?: number;
   fill: { quantity: number; price: number; fee: number } | null;

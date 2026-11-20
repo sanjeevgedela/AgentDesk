@@ -1,6 +1,7 @@
 import { keepRecentQuotes, latest, signal, type Snapshot } from "./engine";
 import { evaluateRun, recordRun } from "./runner";
 import { trainAgent } from "./training";
+import { queueAnchor } from "./anchor-queue";
 import { transact } from "./store";
 export async function runAutopilot(quotes: Snapshot[]) {
   return transact("operator", async desk => {
@@ -19,7 +20,7 @@ export async function runAutopilot(quotes: Snapshot[]) {
         if (desk.decisions.some(d => d.agent === agent.id && d.version === version.number &&
             d.snapshot.symbol === quote.symbol && d.snapshot.at === quote.at && !d.researchPurchase)) continue;
         const { proposal, source } = evaluateRun(version, quote, signal(desk, quote));
-        recordRun(desk, agent, quote, proposal, source);
+        queueAnchor(recordRun(desk, agent, quote, proposal, source), version);
         runs++;
       }
     }

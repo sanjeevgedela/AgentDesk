@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   advance, configSchema, currentSnapshot, evidenceFor, keepRecentQuotes, latest, newAgent, recommendation, record,
@@ -7,6 +7,8 @@ import {
 import { trainAgent } from "../../../lib/training";
 import { appendQuotes, quoteSymbol } from "../../../lib/history";
 import { geminiSnapshots } from "../../../lib/gemini";
+import { processAnchors, queueAnchor } from "../../../lib/anchor-queue";
+import { verifyAnchor } from "../../../lib/anchor";
 import { evaluateRun, recordRun } from "../../../lib/runner";
 import { evaluateInstructions } from "../../../lib/instructions";
 import { interpret } from "../../../lib/model";
@@ -29,6 +31,7 @@ const action = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("confirm"), id: uuid }),
   z.object({ kind: z.literal("buy"), id: uuid, decision: uuid, requestId: uuid }),
   z.object({ kind: z.literal("reconcile"), id: uuid }),
+  z.object({ kind: z.literal("verify-anchor"), id: uuid }),
   z.object({ kind: z.literal("apply-review"), id: uuid }),
   z.object({ kind: z.literal("voice") }),
 ]);
@@ -84,6 +87,20 @@ export async function POST(req: NextRequest) {
     return reply({ error: "Unlock the operator workspace to perform this action." }, 403);
 
   try {
+    if (input.kind === "verify-anchor") {
+      const decision = await transact(owner, desk => desk.decisions.find(item => item.id === input.id));
+      const signature = decision?.anchor?.signature;
+      if (!decision || !signature) throw new Error("No submitted decision anchor.");
+      const proof = await verifyAnchor(decision, signature);
+      return reply(await transact(owner, desk => {
+        const anchor = desk.decisions.find(item => item.id === input.id)?.anchor;
+        if (anchor?.signature === signature && proof.state !== "uncertain") {
+          anchor.status = proof.state;
+          if ("slot" in proof) anchor.slot = proof.slot;
+        }
+        return { desk, proof };
+      }));
+    }
     if (input.kind === "voice") {
       const key = process.env.ELEVENLABS_API_KEY;
       const id = process.env.ELEVENLABS_AGENT_ID;
@@ -205,15 +222,18 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      return reply(await transact(owner, desk => {
+      const outcome = await transact(owner, desk => {
         const agent = agentFor(desk, input.id);
         if (latest(agent).number !== original.version.number || currentSnapshot(desk)?.id !== original.snapshot.id)
           throw new Error("The strategy or market changed during this run. Try again.");
         const existing = desk.decisions.find(d => d.agent === agent.id && d.snapshot.id === original.snapshot.id && d.version === original.version.number && !d.researchPurchase);
         if (existing) return { desk, decision: existing, reused: true };
         const decision = recordRun(desk, agent, original.snapshot, proposal, source);
+        if (auth) queueAnchor(decision, latest(agent));
         return { desk, decision, reused: false };
-      }));
+      });
+      if (!outcome.reused && outcome.decision.anchor) after(async () => { await processAnchors(outcome.decision.id); });
+      return reply(outcome);
     }
     return reply(await transact(owner, desk => {
       switch (input.kind) {
