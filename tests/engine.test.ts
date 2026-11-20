@@ -163,7 +163,7 @@ test("a visitor can complete and apply an uncapped simulated review without netw
   const network = t.mock.method(globalThis, "fetch", async () => { throw new Error("Demo must stay offline"); });
   try {
     const buy = () => call({ kind: "buy", id, decision, requestId: crypto.randomUUID() });
-    assert.equal((await call({ kind: "propose", id, cap: PRICE, budget: PRICE })).status, 200);
+    assert.equal((await call({ kind: "propose", id, cap: PRICE, budget: PRICE })).status, 403);
     const receipt = (await buy()).desk.purchases[0];
     assert.equal(receipt.status, "simulated");
     assert.equal(receipt.after, "buy");

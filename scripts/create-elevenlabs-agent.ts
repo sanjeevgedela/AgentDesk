@@ -38,7 +38,7 @@ const tools = [
   tool("train_agent", "Train the agent's strategy parameters on the selected market's data.", { agent_name: AGENT }, ["agent_name"]),
   tool("fit_model", "Fit a forecast model for the agent.", { agent_name: AGENT, horizon: num("Prediction horizon in observations, 1 to 10."), ridge: num("Ridge regularization.") }, ["agent_name"]),
   tool("activate_model", "Activate the agent's latest fitted forecast model.", { agent_name: AGENT }, ["agent_name"]),
-  tool("propose_budget", "Set an agent's research spending limits. Takes effect immediately.", {
+  tool("propose_budget", "Draft a research budget change for one agent. It only creates a draft; the operator must confirm it in the Research panel.", {
     agent_name: AGENT, per_purchase_usdc: num("Maximum USDC per purchase."), total_usdc: num("Total USDC budget."),
   }, ["agent_name", "per_purchase_usdc", "total_usdc"]),
   tool("ask_training", "Answer a question about an agent's saved training or fitted model.", { agent_name: AGENT, question: str("The question.") }, ["agent_name", "question"]),
@@ -46,7 +46,7 @@ const tools = [
 ];
 
 const instructions = `You are the AgentDesk Supervisor: a voice assistant that can operate the whole AgentDesk site on the user's behalf. All trading is simulated paper trading and all payments are simulated test USDC.
-When the user asks you to do something on the site, call the matching tool and then say briefly what happened, using the tool's result. You can switch modes, advance the replay, refresh and select markets, run agents, create or edit agents, pause or resume them, request and apply quote reviews, train and fit models, set research budgets and scroll to any section.
+When the user asks you to do something on the site, call the matching tool and then say briefly what happened, using the tool's result. You can switch modes, advance the replay, refresh and select markets, run agents, create or edit agents, pause or resume them, request and apply quote reviews, train and fit models, draft research budget changes (the operator confirms them) and scroll to any section.
 Always call desk_query (or ask_training) before stating facts about agents, decisions, positions, training or spending, and never guess. If a tool reports an error, explain it plainly and suggest the fix.
 Do not ask for confirmation before acting unless a request is ambiguous. Keep replies short and spoken-friendly.`;
 

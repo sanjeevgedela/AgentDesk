@@ -15,7 +15,7 @@ const LIVE_REFRESH_MS = 500;
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const historySchema = z.object({ backfill: z.object({ status: z.enum(["available", "unavailable", "empty"]), source: z.string(), points: z.array(z.object({ at: z.iso.datetime(), cents: z.number() })) }).optional(), bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
-const VOICE_TOOLS = ["describe_screen", "navigate", "set_mode", "advance_replay", "refresh_quotes", "select_market", "run_agents", "guided_demo", "create_agent", "update_agent", "request_quote_review", "apply_review", "train_agent", "fit_model", "activate_model", "propose_budget", "confirm_budget", "ask_training", "desk_query"];
+const VOICE_TOOLS = ["describe_screen", "navigate", "set_mode", "advance_replay", "refresh_quotes", "select_market", "run_agents", "guided_demo", "create_agent", "update_agent", "request_quote_review", "apply_review", "train_agent", "fit_model", "activate_model", "propose_budget", "ask_training", "desk_query"];
 const suggestions = ["Why did the agents disagree?", "How much research did each agent buy?", "What changed between strategy versions?"];
 
 export default function Dashboard() {
@@ -338,12 +338,9 @@ function DeskView() {
         }
         case "propose_budget": {
           const agent = agentNamed(text("agent_name"));
-          const payload = await request({ kind: "propose", id: agent.id, cap: Math.round(Number(args.per_purchase_usdc) * 1_000_000), budget: Math.round(Number(args.total_usdc) * 1_000_000) });
-          const change = payload.desk?.changes.find(c => c.agent === agent.id);
-          if (change) { await request({ kind: "confirm", id: change.id }); return `Set ${latest(agent).name}'s research limits to ${args.per_purchase_usdc} USDC per purchase and ${args.total_usdc} USDC total.`; }
-          return "Proposal created.";
+          await request({ kind: "propose", id: agent.id, cap: Math.round(Number(args.per_purchase_usdc) * 1_000_000), budget: Math.round(Number(args.total_usdc) * 1_000_000) });
+          return "Proposal displayed. The operator must confirm it in AgentDesk.";
         }
-        case "confirm_budget": return "Budget changes are confirmed as soon as you propose them.";
         case "ask_training": {
           const agent = agentNamed(text("agent_name"));
           return (await request({ kind: "ask-training", id: agent.id, question: text("question") || "Summarize training." })).answer ?? "No training records.";
@@ -477,7 +474,7 @@ function DeskView() {
                     {running === agent.id ? "Evaluating…" : latestRun?.version === config.number ? "Run again" : "Run agent"}
                   </button>
                   <button className="quiet" disabled={!!busy} onClick={() => { setAddMarket(!!needsMarket); setInstructions(config.instructions); setEditing(agent); }}>{needsMarket ? "Edit allowed markets" : "Edit"}</button>
-                  <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>
+                  {auth && <button className="quiet" disabled={!!busy} onClick={() => setFunding(agent)}>Budget</button>}
                   <a className="quiet" href="#training" onClick={() => setTrainingAgent(agent.id)}>Training</a>
                 </div>
                 {marketDecisions.length > 1 && <div className="equity-panel">
@@ -510,14 +507,15 @@ function DeskView() {
             </div>
             <div className="training-status">
               <span>{desk.mode === "replay" ? "SYNTHETIC dataset · 600 observations" : `${trainingCount} recent observations for ${desk.selected}`}</span>
-              <button className="primary" disabled={!!busy || !allowedToTrain || (desk.mode === "live" && trainingCount < 120)} onClick={() => {
+              {auth && <button className="primary" disabled={!!busy || !allowedToTrain || (desk.mode === "live" && trainingCount < 120)} onClick={() => {
                 if (selectedTrainingAgent) void act("Training strategy", { kind: "train", id: selectedTrainingAgent.id, symbol: snapshot?.symbol, synthetic: desk.mode === "replay" });
-              }}>{desk.mode === "replay" ? "Train on SYNTHETIC" : "Train on live history"}</button>
+              }}>{desk.mode === "replay" ? "Train on SYNTHETIC" : "Train on live history"}</button>}
             </div>
-            {!allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
+            {!auth && <p className="empty">{operatorAccess ? "Open Operator access to run training." : "Training runs are available in the operator workspace. Enable operator access in the server settings."}</p>}
+            {auth && !allowedToTrain && <p className="empty">Add the selected market to this agent’s allowed markets.</p>}
             {desk.mode === "live" && trainingCount < 120 && <p className="empty">Training on live history needs 120 observations for the same market.</p>}
             {selectedTrainingAgent && <FittedTraining key={"fit-" + selectedTrainingAgent.id} models={selectedTrainingAgent.fittedModels ?? []}
-              active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator
+              active={latest(selectedTrainingAgent).modelId} busy={!!busy} canFit={allowedToTrain} operator={auth}
               fit={async (config, synthetic) => {
                 if (!snapshot) throw new Error("Select a market before fitting.");
                 if (synthetic && snapshot.mode !== "replay") throw new Error("Switch to Replay before fitting a SYNTHETIC model.");
@@ -549,7 +547,7 @@ function DeskView() {
             </section>
             <section className="panel feed" id="research"><h2>Research payments</h2>
               <p className="empty">{auth ? "Verified quote reviews use Solana devnet test USDC." : "Request a quote review and apply its recommendation to your paper portfolio."}</p>
-              {desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
+              {auth && desk.changes.map(c => <article key={c.id}><strong>Budget change pending</strong><p>{desk.agents.find(a => a.id === c.agent)?.versions.at(-1)?.name} · cap {usdc(c.cap)} · total {usdc(c.budget)}</p><button className="primary" disabled={!!busy} onClick={() => act("Confirming spending authority", { kind: "confirm", id: c.id })}>Confirm budget change</button></article>)}
               <PagedFeed entries={[...desk.purchases].reverse()} prefix="purchase-" render={p => <article id={"purchase-" + p.id} key={p.id}><div className="entry-head"><strong>Quote quality review</strong><span className={`pill ${["confirmed", "simulated"].includes(p.status) ? "good" : ""}`}>{p.status}</span></div><small>{usdc(p.amount)} · {date(p.at)} · <a href={"#decision-" + p.decision}>Decision</a></small><p>{p.reason}</p>{p.after && <p>Recommendation: {p.before} → {p.after}. {p.evidence}</p>}<ValidationSteps stages={p.validation} />
                 {(p.status === "confirmed" || p.status === "simulated") && p.after && p.after !== "hold" &&
                   (desk.decisions.find(d => d.researchPurchase === p.id)

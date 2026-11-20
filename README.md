@@ -55,7 +55,7 @@ The server-side x402 client uses Exact SVM over [x402 v2](https://github.com/coi
 
 ## ElevenLabs voice
 
-The voice supervisor is open to every visitor and can operate the whole demo workspace by voice: switching modes, advancing replay, selecting markets, running, creating and editing agents, quote reviews, training, model fitting and budgets. Only Solana settlement checks still need operator access. Because voice sessions use your ElevenLabs quota, cap the agent's concurrency and daily calls before exposing the app publicly. Re-run the script below after changing the tool list to update the existing agent.
+The voice supervisor is open to every visitor and can operate the whole demo workspace by voice: switching modes, advancing replay, selecting markets, running, creating and editing agents, quote reviews, training, model fitting and budget drafts. Actions that already required operator access (training, fitting, budgets, Solana checks) still do, and budget changes still need operator confirmation. Because voice sessions use your ElevenLabs quota, cap the agent's concurrency and daily calls before exposing the app publicly. Re-run the script below after changing the tool list to update the existing agent.
 
 To create the agent from the command line, set `ELEVENLABS_API_KEY` and run `npx tsx --env-file=.env.local scripts/create-elevenlabs-agent.ts`, then copy the printed id into `ELEVENLABS_AGENT_ID`. It registers both tools below and enables authentication. Otherwise, in ElevenLabs, create a private [ElevenAgents](https://elevenlabs.io/docs/eleven-agents/libraries/react) agent with authentication enabled. Register these client tools and enable response waiting for both.
 
