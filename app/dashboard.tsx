@@ -107,7 +107,8 @@ function DeskView() {
   // Client tools are registered once per session, so read the latest desk and request through refs.
   const deskRef = useRef<Desk>(undefined);
   const requestRef = useRef(request);
-  useEffect(() => { deskRef.current = desk; requestRef.current = request; });
+  const authRef = useRef(auth);
+  useEffect(() => { deskRef.current = desk; requestRef.current = request; authRef.current = auth; });
   const voice = useConversation({
     onMessage: ({ message, source }) => { if (message?.trim()) setTranscript(old => [...old.slice(-39), { role: source, text: message }]); },
     onError: (message: string) => setError(`ElevenLabs session error: ${message || "check microphone and agent setup."}`),
@@ -122,6 +123,7 @@ function DeskView() {
       },
       propose_budget: async ({ agent_name, per_purchase_usdc, total_usdc }: { agent_name: string; per_purchase_usdc: number; total_usdc: number }) => {
         try {
+          if (!authRef.current) return "Budget changes need operator access. The demo simulates research payments with no spending limits.";
           const agent = deskRef.current?.agents.find(a => latest(a).name.toLowerCase() === String(agent_name).trim().toLowerCase());
           if (!agent) return "Agent name not found. Known agents: " + (deskRef.current?.agents.map(a => latest(a).name).join(", ") || "none") + ".";
           await requestRef.current({ kind: "propose", id: agent.id, cap: Math.round(Number(per_purchase_usdc) * 1_000_000), budget: Math.round(Number(total_usdc) * 1_000_000) });
@@ -449,8 +451,7 @@ function DeskView() {
             </section>
           </div>
           <section className="panel feed" id="supervisor"><div className="section-head"><div><h2>Supervisor</h2><p className="empty">Answers are generated from saved decisions, positions and research records.</p></div>
-            <button className={talking ? "primary" : "quiet"} aria-label={talking ? "End voice call" : "Start voice call"} disabled={!!busy || (auth && !talking && !voiceAvailable)} onClick={() => {
-              if (!auth && !talking) { setUnlock(true); return; }
+            <button className={talking ? "primary" : "quiet"} aria-label={talking ? "End voice call" : "Start voice call"} disabled={!!busy || (!talking && !voiceAvailable)} onClick={() => {
               void perform(talking ? "Ending call" : "Connecting ElevenLabs", async () => {
                 if (talking) { voice.endSession(); return; }
                 if (!navigator.mediaDevices?.getUserMedia) throw new Error("Voice needs a secure (HTTPS or localhost) browser context with microphone support.");
@@ -462,8 +463,7 @@ function DeskView() {
                 voice.startSession({ signedUrl, connectionType: "websocket" });
               });
             }}>{talking ? (voice.isSpeaking ? "🔊 Speaking · End call" : "🎤 Listening · End call") : "🎤 Talk to supervisor"}</button></div>
-            {auth && !talking && !voiceAvailable && <small className="empty">ElevenLabs voice requires server configuration.</small>}
-            {!auth && <small className="empty">Voice requires operator access. Click the mic to unlock.</small>}
+            {!talking && !voiceAvailable && <small className="empty">ElevenLabs voice requires server configuration.</small>}
             {(talking || transcript.length > 0) && <div className="messages" aria-live="polite">{transcript.map((t, i) => <article key={i}><strong>{t.role === "user" ? "You" : "Supervisor"}</strong><p>{t.text}</p></article>)}</div>}
             <div className="suggestions">{suggestions.map(s => <button className="quiet" key={s} disabled={!!busy} onClick={() => ask(s)}>{s}</button>)}</div>
             <div className="messages" aria-live="polite">{messages.map((m, i) => <article key={i}><strong>{m.question}</strong><p>{m.answer.split(/(\[(?:[0-9a-f]{8}-){1}[0-9a-f-]{27}\])/g).map((part, j) => {

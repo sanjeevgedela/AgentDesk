@@ -68,14 +68,22 @@ test("invalid model actions and extra arguments fail validation", () => {
   assert.equal(proposalSchema.safeParse({ action: "buy", reason: "Invalid", amount: 200 }).success, false);
 });
 
-test("anonymous Solana reconciliation and voice sessions are rejected", async () => {
+test("anonymous Solana reconciliation is rejected and voice needs no operator access", async () => {
   assert.equal(operator("Bearer wrong"), false);
-  const id = crypto.randomUUID();
-  for (const body of [{ kind: "reconcile", id }, { kind: "voice" }]) {
-    const response = await POST(new NextRequest("http://localhost/api/desk", {
-      method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
-    }));
-    assert.equal(response.status, 403);
+  const post = (body: object) => POST(new NextRequest("http://localhost/api/desk", {
+    method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
+  }));
+  assert.equal((await post({ kind: "reconcile", id: crypto.randomUUID() })).status, 403);
+  const keys = { key: process.env.ELEVENLABS_API_KEY, id: process.env.ELEVENLABS_AGENT_ID };
+  delete process.env.ELEVENLABS_API_KEY;
+  delete process.env.ELEVENLABS_AGENT_ID;
+  try {
+    const response = await post({ kind: "voice" });
+    assert.notEqual(response.status, 403);
+    assert.match(String((await response.json()).error), /ElevenLabs/);
+  } finally {
+    if (keys.key) process.env.ELEVENLABS_API_KEY = keys.key;
+    if (keys.id) process.env.ELEVENLABS_AGENT_ID = keys.id;
   }
 });
 
