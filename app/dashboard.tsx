@@ -1,6 +1,6 @@
 "use client";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { z } from "zod";
 import { DecisionAudit, ValidationSteps } from "./components/audit";
 import { FittedTraining } from "./components/fitted-training";
@@ -10,6 +10,7 @@ import { agentStats, currentSnapshot, hasRun, INITIAL_CASH, dollars, positionMar
 
 type Payload = { runs?: number; refreshed?: boolean; proof?: { state: string }; desk?: Desk; auth?: boolean; operatorAccess?: boolean; voice?: boolean; model?: boolean; decision?: Decision; reused?: boolean; answer?: string; signedUrl?: string; error?: string };
 type Action = Record<string, unknown> & { kind: string };
+const LIVE_REFRESH_MS = 500;
 const money = (value: FormDataEntryValue | null) => Math.round(Number(value) * 1_000_000);
 const date = (at: string) => new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const historySchema = z.object({ backfill: z.object({ status: z.enum(["available", "unavailable", "empty"]), source: z.string(), points: z.array(z.object({ at: z.iso.datetime(), cents: z.number() })) }).optional(), bars: z.array(z.object({ bid: z.number().int(), ask: z.number().int(), at: z.iso.datetime() })), hash: z.string().regex(/^[0-9a-f]{64}$/) });
@@ -104,18 +105,27 @@ function DeskView() {
   });
   const talking = voice.status === "connected";
   const snapshot = desk && currentSnapshot(desk);
+  const liveSymbol = snapshot?.mode === "live" ? snapshot.symbol : undefined;
   useEffect(() => {
-    if (!snapshot || snapshot.mode === "replay") return;
+    if (!liveSymbol) return;
     const controller = new AbortController();
-    const symbol = snapshot.symbol;
-    void fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&limit=5000`, { signal: controller.signal })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error("History unavailable")))
-      .then(raw => {
-        const parsed = historySchema.parse(raw);
-        setHistory({ symbol, count: parsed.bars.length, hash: parsed.hash, quotes: parsed.bars, backfill: parsed.backfill });
-      }).catch(() => {});
-    return () => controller.abort();
-  }, [snapshot]);
+    let loading = false;
+    const loadHistory = () => {
+      if (loading || document.visibilityState !== "visible") return;
+      loading = true;
+      void fetch(`/api/history?symbol=${encodeURIComponent(liveSymbol)}&limit=5000`, { signal: controller.signal })
+        .then(response => response.ok ? response.json() : Promise.reject(new Error("History unavailable")))
+        .then(raw => {
+          const parsed = historySchema.parse(raw);
+          if (!controller.signal.aborted) {
+            setHistory({ symbol: liveSymbol, count: parsed.bars.length, hash: parsed.hash, quotes: parsed.bars, backfill: parsed.backfill });
+          }
+        }).catch(() => {}).finally(() => { loading = false; });
+    };
+    loadHistory();
+    const timer = window.setInterval(loadHistory, 10_000);
+    return () => { window.clearInterval(timer); controller.abort(); };
+  }, [liveSymbol]);
   const markets = desk ? [...new Map(desk.snapshots.filter(s => s.mode === desk.mode).map(s => [s.symbol, s])).values()] : [];
   const matchingHistory = desk?.mode === "live" && history?.symbol === desk.selected ? history : undefined;
   const series = desk?.snapshots.filter(s => s.symbol === desk.selected && s.mode === desk.mode) ?? [];
@@ -126,17 +136,23 @@ function DeskView() {
   const allowedToTrain = !!snapshot && !!selectedTrainingAgent && latest(selectedTrainingAgent).markets.includes(snapshot.symbol);
   const liveMark = snapshot?.mode === "live" ? snapshot : undefined;
 
+  const lastRefreshStarted = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!autoRefresh || !liveMark || busy || editing || funding || unlock) return;
+    let refreshing = false;
     const refresh = () => {
-      if (document.visibilityState !== "visible") return;
+      if (refreshing || document.visibilityState !== "visible") return;
+      refreshing = true;
+      lastRefreshStarted.current = performance.now();
       setBusy("Refreshing live marks");
       void request({ kind: "refresh-live" })
         .then(result => setRefreshMessage(result.refreshed ? "" : "No fresh quote for this market. Showing its last observed mark."))
         .catch(() => setRefreshMessage("Live update unavailable. Showing the last observed mark."))
         .finally(() => setBusy(""));
     };
-    const timer = window.setTimeout(refresh, 20_000);
+    const previous = lastRefreshStarted.current;
+    const delay = previous === undefined ? LIVE_REFRESH_MS : Math.max(0, LIVE_REFRESH_MS - (performance.now() - previous));
+    const timer = window.setTimeout(refresh, delay);
     const reschedule = () => { if (document.visibilityState === "visible") { window.clearTimeout(timer); refresh(); } };
     document.addEventListener("visibilitychange", reschedule);
     return () => { window.clearTimeout(timer); document.removeEventListener("visibilitychange", reschedule); };
@@ -266,7 +282,7 @@ function DeskView() {
                 {chartQuotes.some((quote, i) => i > 0 && Date.parse(quote.at) - Date.parse(chartQuotes[i - 1].at) > 600_000) && " Gaps over 10 minutes are present."}
               </small>}
               {snapshot.mode === "live" && <div className="history-mini live-controls">
-                <label className="check"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} /> Refresh live quotes every 20 seconds</label>
+                <label className="check"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} /> Refresh live quotes every 0.5 seconds</label>
                 <small>Fresh quotes run eligible paper agents and check configured stop-losses. {automaticRuns !== undefined && `Last refresh: ${automaticRuns} decision${automaticRuns === 1 ? "" : "s"} recorded.`}</small>
                 <small>{matchingHistory ? `${matchingHistory.count} recent recorded observations · SHA-256 ${matchingHistory.hash.slice(0, 12)}…` : "Loading recorded history…"}</small>
                 {matchingHistory?.backfill && <small>
